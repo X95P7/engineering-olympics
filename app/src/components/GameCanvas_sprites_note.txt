@@ -1,0 +1,6 @@
+// This helper note is just to remind: ocean sprite is expected at /sprites/ocean.png in the public folder.
+// GameCanvas.jsx is wired to look for that path when drawing the background water.
+
+
+
+

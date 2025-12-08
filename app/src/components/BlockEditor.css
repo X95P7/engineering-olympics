@@ -1,0 +1,392 @@
+.block-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #2a2a2a;
+  color: #fff;
+  overflow: hidden;
+}
+
+.block-editor-header {
+  padding: 1rem;
+  background: #1a1a1a;
+  border-bottom: 2px solid #FFFFFF;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.block-editor-header h2 {
+  color: #FFFFFF;
+  font-size: 1.5rem;
+}
+
+.block-editor-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.run-button, .clear-button {
+  padding: 0.5rem 1rem;
+  border: 2px solid #FFFFFF;
+  background: #98191C;
+  color: #FFFFFF;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s;
+}
+
+.run-button:hover:not(:disabled) {
+  background: #98191C;
+  transform: scale(1.05);
+}
+
+.run-button:disabled, .clear-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.clear-button {
+  background: #333;
+}
+
+.clear-button:hover:not(:disabled) {
+  background: #444;
+}
+
+.block-palette {
+  padding: 1rem;
+  border-bottom: 2px solid #444;
+  background: #222;
+  flex-shrink: 0;
+  overflow-y: auto;
+  max-height: 40%;
+}
+
+.palette-section {
+  margin-bottom: 1rem;
+}
+
+.palette-section:last-child {
+  margin-bottom: 0;
+}
+
+.palette-section h3 {
+  color: #FFFFFF;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.block-list {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.block-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 2px solid;
+  border-radius: 4px;
+  cursor: grab;
+  background: rgba(255, 255, 255, 0.1);
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.block-item:hover {
+  transform: scale(1.05);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.block-item:active {
+  cursor: grabbing;
+}
+
+.block-icon {
+  font-size: 1.2rem;
+}
+
+.block-label {
+  font-weight: bold;
+}
+
+.block-workspace-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 1rem;
+}
+
+.block-workspace-container h3 {
+  color: #FFFFFF;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.block-workspace {
+  flex: 1;
+  position: relative;
+  background: #1a1a1a;
+  border: 2px dashed #555;
+  border-radius: 4px;
+  overflow: auto; /* Allow scrolling when content exceeds bounds */
+  min-height: 200px;
+  display: flex;
+  flex-direction: column; /* Stack blocks vertically */
+  align-items: flex-start; /* Align blocks to the left */
+  padding: 0.5rem; /* Small padding to prevent blocks from touching edges */
+  gap: 0; /* No gap between sequential blocks */
+}
+
+/* Ensure top-level blocks in workspace stack vertically */
+.block-workspace > .workspace-block {
+  display: block;
+  width: fit-content;
+  flex-shrink: 0;
+}
+
+.workspace-block {
+  position: relative; /* Changed from absolute to relative for vertical stacking */
+  padding: 0.75rem 1rem;
+  cursor: move;
+  min-width: 180px;
+  width: fit-content; /* Allow blocks to stretch to fit content */
+  max-width: none; /* Allow blocks to extend beyond workspace if needed */
+  user-select: none;
+  z-index: 10;
+  background: var(--block-color);
+  color: white;
+  font-weight: bold;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  overflow: visible; /* Ensure nested blocks aren't cut off */
+  margin-bottom: 0; /* No gap between blocks */
+  display: block; /* Ensure blocks are block-level elements */
+  flex-shrink: 0; /* Prevent blocks from shrinking in flex container */
+  /* Scratch-style puzzle piece shape - notch on top, bump on bottom */
+  clip-path: polygon(
+    0% 6px,
+    12px 6px,
+    12px 0%,
+    18px 0%,
+    18px 6px,
+    100% 6px,
+    100% calc(100% - 6px),
+    calc(100% - 18px) calc(100% - 6px),
+    calc(100% - 18px) 100%,
+    calc(100% - 12px) 100%,
+    calc(100% - 12px) calc(100% - 6px),
+    0% calc(100% - 6px)
+  );
+  border-radius: 0;
+}
+
+.workspace-block.container-block {
+  min-width: 220px;
+  width: fit-content; /* Allow blocks to stretch to fit children */
+  max-width: none; /* Allow blocks to extend beyond workspace if needed */
+  overflow: visible; /* Ensure nested blocks aren't cut off */
+  display: block; /* Ensure container blocks are block-level */
+  flex-shrink: 0; /* Prevent blocks from shrinking in flex container */
+  /* Container blocks have a notch on bottom too for nesting */
+  clip-path: polygon(
+    0% 6px,
+    12px 6px,
+    12px 0%,
+    18px 0%,
+    18px 6px,
+    100% 6px,
+    100% calc(100% - 18px),
+    calc(100% - 18px) calc(100% - 18px),
+    calc(100% - 18px) calc(100% - 12px),
+    calc(100% - 12px) calc(100% - 12px),
+    calc(100% - 12px) calc(100% - 18px),
+    0% calc(100% - 18px)
+  );
+}
+
+.workspace-block.container-block.no-puzzle-piece {
+  /* Forever blocks - no puzzle piece shape, just rounded rectangle */
+  clip-path: none;
+  border-radius: 4px;
+  margin-top: 0; /* No negative margin for forever blocks */
+}
+
+.workspace-block-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.workspace-block-icon {
+  font-size: 1.2rem;
+  min-width: 1.2rem;
+}
+
+.workspace-block-label {
+  flex: 1;
+  font-weight: bold;
+}
+
+.delete-block-btn {
+  background: rgba(0, 0, 0, 0.3);
+  border: none;
+  color: white;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.delete-block-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.5);
+  transform: scale(1.1);
+}
+
+.delete-block-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-block-value {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.workspace-block-value label {
+  font-size: 0.8rem;
+  opacity: 0.9;
+}
+
+.workspace-block-value input,
+.workspace-block-value select {
+  padding: 0.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  width: 100%;
+}
+
+.condition-input {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: 0.5rem;
+}
+
+.condition-input select,
+.condition-input input {
+  padding: 0.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #000000; /* Changed to black by default */
+  font-size: 0.8rem;
+}
+
+.condition-input select option {
+  color: #000000;
+  background: #FFFFFF;
+}
+
+.condition-input select.obstacle-type-select,
+.condition-input select.obstacle-type-select option {
+  color: #000000 !important;
+  background: #FFFFFF !important;
+}
+
+.block-children {
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  padding-top: 0.75rem; /* Extra padding at top to account for puzzle piece notch */
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  min-height: 50px;
+  position: relative;
+  margin-left: 0; /* No left margin - blocks align to left edge */
+  margin-right: 0.5rem;
+  transition: all 0.2s;
+  width: fit-content; /* Allow to expand with children */
+  min-width: 100%; /* At least match parent width */
+  overflow: visible; /* Ensure nested blocks aren't cut off */
+}
+
+.block-children.drag-over {
+  background: rgba(255, 255, 255, 0.4) !important;
+  border: 2px dashed #FFFFFF !important;
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.7) !important;
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+}
+
+/* Nested blocks connect flush - bump fits into notch */
+.block-children > .workspace-block {
+  margin-top: -6px; /* Negative margin makes blocks connect flush */
+  position: relative; /* Ensure relative positioning for nested blocks */
+  width: fit-content; /* Allow nested blocks to expand */
+  max-width: none; /* Allow blocks to expand beyond parent initially */
+  display: block; /* Ensure block-level display */
+  overflow: visible; /* Ensure nested content isn't cut off */
+}
+
+.block-children > .workspace-block:first-child {
+  margin-top: -6px; /* First block connects to container's bottom notch */
+}
+
+/* Ensure container blocks expand to fit their widest child */
+.workspace-block.container-block {
+  display: inline-block; /* Allow width to be determined by content */
+}
+
+.drop-zone {
+  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+  text-align: center;
+  padding: 0.5rem;
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+}
+
+.block-else {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+.else-label {
+  color: #FFFFFF;
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  padding-left: 0.5rem;
+}
+
+.workspace-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: #666;
+  font-style: italic;
+}
+
+.workspace-empty .hint {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  color: #888;
+}

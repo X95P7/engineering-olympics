@@ -1,0 +1,968 @@
+import React, { useRef, useEffect, useState } from 'react'
+import './GameCanvas.css'
+
+const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
+  const canvasRef = useRef(null)
+  const [gameSpeed, setGameSpeed] = useState(1)
+  const gameSpeedRef = useRef(1) // Ref to track current game speed
+  const TICKS_PER_SECOND = 180 // Fixed tick rate
+  const spritesRef = useRef({}) // Loaded image sprites (e.g., ocean background)
+  const gameStateRef = useRef({
+    running: false,
+    score: 0,
+    player: { x: 100, y: 300, width: 60, height: 60, state: 'sailing', jumpVelocity: 0, bobVelocity: 0, bobbing: false, sailLevel: 1, cannonCooldown: 0, projectiles: [] },
+    obstacles: [],
+    waterY: 300,
+    algorithmIndex: 0,
+    lastObstacleTime: 0,
+    gameSpeed: 1,
+    frameCount: 0,
+    // Game state variables for blocks
+    gameState: {
+      distanceToObstacle: Infinity,
+      obstacleType: null,
+      obstacleHeight: 0
+    }
+  })
+
+  // Update gameSpeed ref whenever it changes
+  useEffect(() => {
+    gameSpeedRef.current = gameSpeed
+  }, [gameSpeed])
+
+  useEffect(() => {
+    if (!gameRunning || !algorithm || algorithm.length === 0) return
+
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const updateCanvasSize = () => {
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        canvas.width = rect.width
+        canvas.height = rect.height
+      } else {
+        // Fallback dimensions if canvas isn't sized yet
+        canvas.width = 800
+        canvas.height = 600
+      }
+    }
+
+    updateCanvasSize()
+    
+    // Handle window resize
+    const handleResize = () => {
+      updateCanvasSize()
+    }
+    window.addEventListener('resize', handleResize)
+
+    const ctx = canvas.getContext('2d')
+
+    // Lazy-load sprites (only once)
+    const loadSprites = () => {
+      // If already loaded, skip
+      if (spritesRef.current && spritesRef.current.ocean) {
+        return Promise.resolve()
+      }
+
+      const sources = {
+        ocean: '/sprites/ocean.jpg',
+        ship: '/sprites/ship.png',
+        wave: '/sprites/wave.png',
+        shark: '/sprites/shark.png',
+        mine: '/sprites/mine.png',
+      };
+
+      const images = {}
+      let loaded = 0
+      const total = Object.keys(sources).length
+
+      return new Promise((resolve) => {
+        Object.entries(sources).forEach(([key, src]) => {
+          const img = new Image()
+          img.src = src
+          img.onload = () => {
+            images[key] = img
+            loaded++
+            if (loaded === total) {
+              spritesRef.current = { ...spritesRef.current, ...images }
+              resolve()
+            }
+          }
+          img.onerror = () => {
+            console.warn('Failed to load sprite', src)
+            loaded++
+            if (loaded === total) {
+              spritesRef.current = { ...spritesRef.current, ...images }
+              resolve()
+            }
+          }
+        })
+      })
+    }
+
+    // Reset game state
+    gameStateRef.current = {
+      running: true,
+      score: 0,
+      scoreMultiplier: 1,
+      player: { x: 100, y: canvas.height - 150, width: 60, height: 60, state: 'sailing', jumpVelocity: 0, bobVelocity: 0, bobbing: false, sailLevel: 1, cannonCooldown: 0, projectiles: [] },
+      obstacles: [],
+      waterY: canvas.height - 100,
+      lastObstacleTime: 0,
+      lastObstacleFrame: 0,
+      gameSpeed: gameSpeedRef.current,
+      frameCount: 0,
+      tickCount: 0, // Tick counter for fixed-rate game logic
+      lastTickTime: performance.now(),
+      waiting: false,
+      waitTicks: 0, // Wait duration in ticks
+      waitStartTick: 0,
+      stormActive: false,
+      stormStartTick: 0,
+      stormDuration: 1200, // Storm lasts for 1200 ticks (~5 seconds at 60 ticks/sec)
+      stormGracePeriod: 240, // Grace period of 60 ticks (~1 second) before storm can cause damage
+      // Game state variables for blocks
+      gameState: {
+        distanceToObstacle: Infinity,
+        obstacleType: null,
+        obstacleHeight: 0
+      }
+    }
+
+    // Update player water position
+    gameStateRef.current.player.y = gameStateRef.current.waterY - gameStateRef.current.player.height
+    gameStateRef.current.player.baseY = gameStateRef.current.player.y
+
+    let animationFrameId
+    let cancelled = false
+    const MS_PER_TICK = 1000 / TICKS_PER_SECOND
+
+    const gameLoop = (currentTime = performance.now()) => {
+      const state = gameStateRef.current
+      
+      // Stop loop if game is not running and not in initial state
+      if (!gameRunning && !state.running) {
+        // Clear canvas when game ends (same as before first run)
+        ctx.fillStyle = '#1a1a1a'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        return
+      }
+
+      // Read current game speed from ref (updated by separate useEffect)
+      state.frameCount++
+      state.gameSpeed = gameSpeedRef.current
+      
+      // Tick system: Run game logic at fixed rate, scaled by game speed
+      const elapsed = currentTime - state.lastTickTime
+      const ticksToProcess = Math.floor((elapsed / MS_PER_TICK) * gameSpeedRef.current)
+      
+      if (ticksToProcess > 0 && state.running) {
+        state.lastTickTime = currentTime
+        
+        // Process multiple ticks if needed (catch up)
+        // Cap increases with game speed to allow faster gameplay
+        const maxTicksPerFrame = Math.max(5, Math.ceil(gameSpeedRef.current * 5))
+        for (let i = 0; i < Math.min(ticksToProcess, maxTicksPerFrame); i++) {
+          state.tickCount++
+          
+          // Execute algorithm with support for forever loops and if/else
+          if (!state.waiting) {
+            executeAlgorithm(algorithm, state)
+          } else {
+            // Handle wait timing (in ticks)
+            if (state.tickCount - state.waitStartTick >= state.waitTicks) {
+              state.waiting = false
+            }
+          }
+
+          // Update player physics (scaled by game speed is handled by tick rate)
+          updatePlayer(state, canvas.height)
+
+          // Spawn obstacles
+          spawnObstacles(state, canvas.width, canvas.height)
+
+          // Update obstacles
+          updateObstacles(state, canvas.width)
+
+          // Update storm duration event
+          updateStorm(state)
+
+          // Update game state variables for blocks
+          updateGameStateVariables(state, canvas.width)
+
+          // Check collisions
+          const collisionResult = checkCollisions(state)
+          if (collisionResult.collided) {
+            const obstacleName = collisionResult.obstacleType || 'unknown'
+            console.log(`Collision detected! Player collided with: ${obstacleName}. Game ending. Score:`, state.score)
+            state.running = false
+            // Update final score before calling onGameEnd
+            const baseScore = Math.floor(state.tickCount / 6)
+            const finalScore = Math.floor(baseScore * state.scoreMultiplier)
+            state.score = finalScore
+            onScoreChange(finalScore)
+            onGameEnd(finalScore)
+            // Continue to render one more frame to clear canvas
+          }
+        }
+      }
+      
+      // Debug logging every 60 frames
+      if (state.frameCount % 60 === 0 && state.running) {
+        console.log(`Frame ${state.frameCount}, Tick ${state.tickCount}: Score=${state.score}, Obstacles=${state.obstacles.length}, Distance=${state.gameState?.distanceToObstacle?.toFixed(0) || 'Inf'}`)
+      }
+
+      // Clear canvas
+      ctx.fillStyle = '#1a1a1a'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+      // Only draw game elements if game is running
+      if (state.running) {
+        // Draw water/sea (with storm effect if active)
+        drawWater(ctx, canvas.width, canvas.height, state.waterY, state.stormActive)
+
+        // Update score based on ticks with multiplier (sail level affects score rate)
+        const baseScore = Math.floor(state.tickCount / 6) // Score increases every 6 ticks
+        const newScore = Math.floor(baseScore * state.scoreMultiplier)
+        if (newScore !== state.score) {
+          state.score = newScore
+          onScoreChange(newScore)
+        }
+
+        // Draw everything
+        drawPlayer(ctx, state.player, state.waterY)
+        drawProjectiles(ctx, state.player.projectiles)
+        drawObstacles(ctx, state.obstacles, state.waterY)
+
+        // Draw score
+        drawScore(ctx, state.score, canvas.width)
+      }
+      // If game ended, canvas is already cleared (same as before first run)
+
+      animationFrameId = requestAnimationFrame((time) => gameLoop(time))
+    }
+
+    // Load sprites first (ocean background), then start game loop
+    loadSprites().then(() => {
+      if (!cancelled) {
+        gameLoop()
+      }
+    })
+
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(animationFrameId)
+      gameStateRef.current.running = false
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [gameRunning, algorithm])
+
+  const checkCondition = (condition, state) => {
+    if (!condition || !condition.type) return false
+
+    // Ensure gameState object always exists
+    if (!state.gameState) {
+      state.gameState = {
+        distanceToObstacle: Infinity,
+        obstacleType: null,
+        obstacleHeight: 0,
+      }
+    }
+
+    const gameState = state.gameState
+
+    switch (condition.conditionType) {
+      case 'distance_lt':
+        return gameState.distanceToObstacle < (condition.value || 100)
+      case 'distance_gt':
+        return gameState.distanceToObstacle > (condition.value || 100)
+      case 'obstacle_type':
+        return gameState.obstacleType === condition.value
+      case 'storm_active':
+        return state.stormActive === true
+      default:
+        return false
+    }
+  }
+
+  const executeAlgorithm = (algo, state) => {
+    if (!algo || algo.length === 0) return
+
+    // Track current execution index for this algorithm level
+    if (!state.executionStack) {
+      state.executionStack = []
+    }
+
+    for (const block of algo) {
+      if (block.type === 'forever') {
+        // Forever loop - execute children repeatedly every frame
+        if (block.children && block.children.length > 0) {
+          // Execute forever children - they will loop naturally since this is called every frame
+          executeAlgorithm(block.children, state)
+          // Note: Since executeAlgorithm is called every frame, forever loops naturally repeat
+        }
+      } else if (block.type === 'if' || block.type === 'ifelse') {
+        // If/else blocks
+        const conditionMet = checkCondition(block.condition, state)
+        
+        if (conditionMet && block.ifChildren) {
+          executeAlgorithm(block.ifChildren, state)
+        } else if (!conditionMet && block.hasElse && block.elseChildren) {
+          executeAlgorithm(block.elseChildren, state)
+        }
+      } else if (block.type === 'wait') {
+        // Wait block - set waiting state (in ticks, scales with game speed)
+        if (!state.waiting) {
+          state.waiting = true
+          // Convert milliseconds to ticks (60 ticks per second)
+          // At 1x speed: 100ms = 6 ticks, at 2x speed: 100ms = 12 ticks (wait happens faster)
+          state.waitTicks = Math.max(1, Math.floor(((block.value || 100) / 1000) * TICKS_PER_SECOND))
+          state.waitStartTick = state.tickCount
+          return // Stop execution until wait completes
+        }
+      } else {
+        // Regular action block - only execute if it's a valid action
+        if (block.type === 'jump' || block.type === 'cannon' || block.type === 'bob' || block.type === 'sailUp' || block.type === 'sailDown' || block.type === 'wait') {
+          executeAction(block.type, state)
+        }
+      }
+    }
+  }
+
+  const executeAction = (actionType, state) => {
+    const player = state.player
+
+    switch (actionType) {
+      case 'jump':
+        // Jump over wave - only if on water and not already jumping or bobbing
+        if (player.state === 'sailing' && !player.bobbing && player.jumpVelocity === 0 && player.bobVelocity === 0) {
+          player.jumpVelocity = -10
+          player.state = 'jumping'
+        }
+        break
+      case 'cannon':
+        // Shoot cannon at boat - only if cooldown is ready
+        if (player.cannonCooldown <= 0) {
+          player.projectiles.push({
+            x: player.x + player.width,
+            y: player.y + player.height / 2,
+            width: 10,
+            height: 10,
+            speed: 8
+          })
+          player.cannonCooldown = 30 // Cooldown in ticks
+        }
+        break
+      case 'bob':
+        // Bob underwater - use negative gravity system (reverse jump)
+        if (player.state === 'sailing' && !player.jumpVelocity && !player.bobbing) {
+          player.bobbing = true
+          player.bobVelocity = 3 // Start moving down (positive velocity = down)
+          console.log('Bobbing started')
+          player.state = 'bobbing'
+        }
+        break
+      case 'sailUp':
+        // Raise sails - faster score gain
+        if (player.sailLevel < 2) {
+          player.sailLevel = 2
+          state.scoreMultiplier = 1.5
+        }
+        break
+      case 'sailDown':
+        // Lower sails - slower score gain
+        if (player.sailLevel > 0) {
+          player.sailLevel = 0
+          state.scoreMultiplier = 0.5
+        }
+        break
+    }
+  }
+
+  const updatePlayer = (state, canvasHeight) => {
+    const player = state.player
+
+    // Update cannon cooldown
+    if (player.cannonCooldown > 0) {
+      player.cannonCooldown--
+    }
+
+    // Update projectiles
+    player.projectiles = player.projectiles.filter(proj => {
+      proj.x += proj.speed
+      // Remove if off screen
+      return proj.x < canvasHeight * 2
+    })
+
+    // Gravity and jumping - now scales with tick rate (which scales with game speed)
+    if (player.state === 'jumping') {
+      player.jumpVelocity += 0.25 // Gravity per tick
+      player.y += player.jumpVelocity
+
+      if (player.y >= state.waterY - player.height) {
+        player.y = state.waterY - player.height
+        player.jumpVelocity = 0
+        player.state = 'sailing'
+      }
+    }
+
+    // Bobbing - negative gravity system (reverse jump animation)
+    if (player.state === 'bobbing' || player.bobbing) {
+      player.bobVelocity -= 0.07 // Negative gravity per tick (brings player back up)
+      player.y += player.bobVelocity
+
+      // Check if player has surfaced (reached water level)
+      if (player.y <= state.waterY - player.height) {
+        player.y = state.waterY - player.height
+        console.log('Bobbing stopped')
+        player.bobVelocity = 0
+        player.bobbing = false
+        player.state = 'sailing'
+      }
+    }
+
+    // Reset sail level to normal if not explicitly set
+    if (player.sailLevel === 2 && state.scoreMultiplier === 1.5) {
+      // Sail up is active
+    } else if (player.sailLevel === 0 && state.scoreMultiplier === 0.5) {
+      // Sail down is active
+    } else {
+      // Default to normal
+      player.sailLevel = 1
+      state.scoreMultiplier = 1
+    }
+  }
+
+  const spawnObstacles = (state, canvasWidth, canvasHeight) => {
+    // Use tick-based spawning - spawn first obstacle after 30 ticks (0.5 seconds), then every 120 ticks (2 seconds)
+    const minSpawnInterval = 120 // Ticks (scales automatically with game speed via tick rate)
+    
+    // Allow first obstacle to spawn after 30 ticks if none exist
+    if (state.obstacles.length === 0) {
+      if (state.tickCount < 30) return
+    } else {
+      if (state.tickCount - state.lastObstacleFrame < minSpawnInterval) return
+    }
+    
+    if (state.obstacles.length >= 3) return
+
+    const score = state.score
+    const obstacleTypes = []
+
+    // Determine available obstacles based on score
+    if (score >= 0) obstacleTypes.push('wave', 'birdFlock', 'mines')
+    if (score >= 500) obstacleTypes.push('boat', 'shark') // Lowered threshold for boats
+    // Storms are handled separately as duration events, not regular obstacles
+
+    // Ensure we don't spawn incompatible obstacles
+    const hasBoat = state.obstacles.some(o => o.type === 'boat')
+    const hasStormActive = state.stormActive
+
+    const availableTypes = obstacleTypes.filter(type => {
+      // Don't spawn boats during storms
+      if (type === 'boat' && hasStormActive) return false
+      return true
+    })
+
+    if (availableTypes.length === 0) return
+
+    const randomType = availableTypes[Math.floor(Math.random() * availableTypes.length)]
+    const obstacle = createObstacle(randomType, canvasWidth, canvasHeight, state.waterY)
+
+    // Ensure obstacle is avoidable
+    if (isObstacleAvoidable(obstacle, state.obstacles, state.player)) {
+      state.obstacles.push(obstacle)
+      state.lastObstacleTime = Date.now()
+      state.lastObstacleFrame = state.tickCount
+      console.log(`Spawned ${randomType} obstacle at tick ${state.tickCount}, x=${obstacle.x}, canvasWidth=${canvasWidth}`)
+    }
+  }
+
+  const createObstacle = (type, canvasWidth, canvasHeight, waterY) => {
+    const base = {
+      x: canvasWidth + 50, // Spawn slightly off-screen to the right
+      speed: 3, // Base speed
+      id: Date.now() + Math.random()
+    }
+
+    switch (type) {
+      case 'wave':
+        return { ...base, type: 'wave', y: waterY - 40, width: 60, height: 40, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
+      case 'boat':
+        return { ...base, type: 'boat', y: waterY - 50, width: 70, height: 50, hitbox: { x: 0, y: 0, width: 70, height: 50 }, health: 1, requiresCannon: true }
+      case 'storm':
+        return { ...base, type: 'storm', y: waterY - 150, width: 100, height: 150, hitbox: { x: 0, y: 0, width: 100, height: 150 }, requiresSailDown: true }
+      case 'birdFlock':
+        return { ...base, type: 'birdFlock', y: waterY - 80, width: 80, height: 30, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresJumpOrBob: true }
+      case 'mines':
+        return { ...base, type: 'mines', y: waterY - 20, width: 40, height: 20, hitbox: { x: 0, y: 0, width: 20, height: 20 }, requiresJump: true, underwater: true }
+      case 'shark':
+        return { ...base, type: 'shark', y: waterY + 10, width: 60, height: 30, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresNoBob: true, underwater: true }
+      default:
+        return { ...base, type: 'wave', y: waterY - 40, width: 60, height: 40, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
+    }
+  }
+
+  const isObstacleAvoidable = (newObstacle, existingObstacles, player) => {
+    // Simple check: ensure at least one action can avoid the obstacle
+    // This is a simplified version - in a full implementation, you'd check all combinations
+    return true
+  }
+
+  const updateObstacles = (state, canvasWidth) => {
+    state.obstacles = state.obstacles.filter(obstacle => {
+      // Move obstacle left (toward player) - speed scales with tick rate (which scales with game speed)
+      obstacle.x -= obstacle.speed // Speed per tick (scales automatically)
+      // Only remove obstacle when it's completely off the left side of the screen
+      return obstacle.x + obstacle.width > -50 // Give a bit of buffer
+    })
+  }
+
+  const updateStorm = (state) => {
+    // Check if we should start a storm (random chance, but not too frequent)
+    if (!state.stormActive && state.tickCount > 200 && Math.random() < 0.001) {
+      // 0.1% chance per tick after 200 ticks
+      state.stormActive = true
+      state.stormStartTick = state.tickCount
+      state.stormGracePeriod = 60 // Grace period of 60 ticks (~1 second)
+      console.log('Storm started at tick', state.tickCount, '- Grace period active')
+    }
+
+    // Check if storm should end
+    if (state.stormActive && state.tickCount - state.stormStartTick >= state.stormDuration) {
+      state.stormActive = false
+      console.log('Storm ended at tick', state.tickCount)
+    }
+  }
+
+  const checkCollisions = (state) => {
+    const player = state.player
+
+    // Check storm collision - if storm is active and sails are not down, player sinks
+    // But only after grace period has elapsed
+    if (state.stormActive && player.sailLevel !== 0) {
+      const ticksSinceStormStart = state.tickCount - state.stormStartTick
+      const gracePeriod = state.stormGracePeriod || 60
+      
+      // Only cause damage after grace period
+      if (ticksSinceStormStart > gracePeriod) {
+        // Player must have lowered sails during storm
+        return { collided: true, obstacleType: 'storm' } // Game over - storm sank the ship
+      }
+    }
+
+    // Check projectile collisions with boats
+    player.projectiles.forEach((proj, projIdx) => {
+      state.obstacles.forEach((obstacle, obsIdx) => {
+        if (obstacle.type === 'boat' && obstacle.health > 0) {
+          if (proj.x < obstacle.x + obstacle.width &&
+              proj.x + proj.width > obstacle.x &&
+              proj.y < obstacle.y + obstacle.height &&
+              proj.y + proj.height > obstacle.y) {
+            obstacle.health--
+            player.projectiles.splice(projIdx, 1)
+            if (obstacle.health <= 0) {
+              state.obstacles.splice(obsIdx, 1)
+            }
+          }
+        }
+      })
+    })
+
+    // Only check collisions if there are obstacles
+    if (state.obstacles.length === 0) return { collided: false }
+
+    for (const obstacle of state.obstacles) {
+      // Skip boats that have been destroyed
+      if (obstacle.type === 'boat' && obstacle.health <= 0) continue
+      
+      // Skip storm obstacles - storms are duration events, not positional collisions
+      if (obstacle.type === 'storm') continue
+      
+      // Only check obstacles that are on screen and approaching
+      if (obstacle.x + obstacle.width < player.x - 50) continue // Already passed
+      if (obstacle.x > player.x + player.width + 50) continue // Too far ahead
+
+      const playerLeft = player.x
+      const playerRight = player.x + player.width
+      const playerTop = player.y
+      const playerBottom = player.y + player.height
+
+      const obstacleLeft = obstacle.x + obstacle.hitbox.x
+      const obstacleRight = obstacle.x + obstacle.hitbox.x + obstacle.hitbox.width
+      const obstacleTop = obstacle.y + obstacle.hitbox.y
+      const obstacleBottom = obstacle.y + obstacle.hitbox.y + obstacle.hitbox.height
+
+      // Check if player can avoid this obstacle
+      let canAvoid = false
+
+      if (obstacle.requiresJump) {
+        // Wave, Mines - need to jump over
+        canAvoid = player.state === 'jumping' && player.y < obstacleTop - 10
+      } else if (obstacle.requiresCannon) {
+        // Boat - need to shoot with cannon (handled above, or get hit)
+        canAvoid = false // If boat reaches player without being shot, collision
+      } else if (obstacle.requiresJumpOrBob) {
+        // Bird flock - can jump or bob
+        canAvoid = (player.state === 'jumping' && player.y < obstacleTop - 5) || player.bobbing
+      } else if (obstacle.requiresNoBob) {
+        // Shark - must NOT bob (stay on surface)
+        canAvoid = !player.bobbing && player.y >= state.waterY - player.height
+      }
+
+      // Check collision - only if actually overlapping
+      if (playerRight > obstacleLeft && 
+          playerLeft < obstacleRight && 
+          playerBottom > obstacleTop && 
+          playerTop < obstacleBottom && 
+          !canAvoid) {
+        return { collided: true, obstacleType: obstacle.type }
+      }
+    }
+
+    return { collided: false }
+  }
+
+  const drawWater = (ctx, width, height, waterY, stormActive = false) => {
+    // Draw sky (gray if storm is active)
+    if (stormActive) {
+      ctx.fillStyle = '#708090' // Gray sky during storm
+    } else {
+      ctx.fillStyle = '#87CEEB' // Normal blue sky
+    }
+    ctx.fillRect(0, 0, width, waterY)
+    
+    // Draw storm clouds if storm is active
+    if (stormActive) {
+      ctx.fillStyle = '#2F2F2F'
+      for (let i = 0; i < width; i += 150) {
+        const cloudX = (i + (Date.now() / 10) % 150) % width
+        const cloudY = 50 + Math.sin(i / 100) * 20
+        ctx.beginPath()
+        ctx.arc(cloudX, cloudY, 30, 0, Math.PI * 2)
+        ctx.arc(cloudX + 40, cloudY, 35, 0, Math.PI * 2)
+        ctx.arc(cloudX + 80, cloudY, 30, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+    
+    const sprites = spritesRef.current || {}
+    const oceanSprite = sprites.ocean
+
+    if (oceanSprite) {
+      // Draw static ocean sprite as the water background
+      ctx.drawImage(oceanSprite, 0, waterY, width, height - waterY)
+    } else {
+      // Fallback: draw solid water color (darker if storm is active)
+      if (stormActive) {
+        ctx.fillStyle = '#1C3A5E' // Darker water during storm
+      } else {
+        ctx.fillStyle = '#1E90FF' // Normal blue water
+      }
+      ctx.fillRect(0, waterY, width, height - waterY)
+    }
+    
+    // Optional water waves pattern overlay (works with both sprite and solid color)
+    ctx.strokeStyle = stormActive ? '#2F4F4F' : '#4169E1'
+    ctx.lineWidth = 2
+    for (let i = 0; i < width; i += 30) {
+      ctx.beginPath()
+      ctx.moveTo(i, waterY)
+      ctx.quadraticCurveTo(i + 15, waterY - (stormActive ? 8 : 5), i + 30, waterY)
+      ctx.stroke()
+    }
+  }
+
+  const drawPlayer = (ctx, player, waterY) => {
+    ctx.save()
+
+    const sprites = spritesRef.current || {}
+    const shipSprite = sprites.ship
+
+    // Draw ship (Roscoe Raider) - use actual player.y position for both bobbing and normal states
+    // Ship hull - either sprite or fallback rectangle
+    // Draw sprite at 2x size (120x120) but keep hitbox at 60x60
+    const spriteScale = 2
+    const spriteWidth = player.width * spriteScale
+    const spriteHeight = player.height * spriteScale
+    const spriteX = player.x - (spriteWidth - player.width) / 2 // Center sprite on hitbox
+    const spriteY = player.y - (spriteHeight - player.height) / 2 // Center sprite on hitbox
+    
+    if (shipSprite) {
+      ctx.drawImage(shipSprite, spriteX, spriteY, spriteWidth, spriteHeight)
+    } else {
+      ctx.fillStyle = '#8B4513'
+      ctx.fillRect(player.x, player.y, player.width, player.height)
+    }
+    
+    // Only draw mast and sails if ship top is at or above water level
+    const shipTop = player.y
+    const waterLevel = waterY - player.height
+    
+    if (shipTop <= waterLevel) {
+
+      /*
+      // Ship mast
+      ctx.fillStyle = '#654321'
+      const mastHeight = player.sailLevel === 2 ? 40 : player.sailLevel === 0 ? 20 : 30
+      const mastY = shipTop - mastHeight
+      ctx.fillRect(player.x + player.width / 2 - 2, mastY, 4, mastHeight)
+      
+      // Sails based on sail level
+      if (player.sailLevel === 2) {
+        // Sails up - full sails
+        ctx.fillStyle = '#FFFFFF'
+        ctx.fillRect(player.x + player.width / 2, shipTop - 35, 25, 30)
+      } else if (player.sailLevel === 0) {
+        // Sails down - lowered
+        ctx.fillStyle = '#CCCCCC'
+        ctx.fillRect(player.x + player.width / 2, shipTop - 15, 20, 10)
+      } else {
+        // Normal sails
+        ctx.fillStyle = '#FFFFFF'
+        ctx.fillRect(player.x + player.width / 2, shipTop - 25, 22, 20)
+      }
+      
+      // Ship flag (MSOE colors)
+      ctx.fillStyle = '#98191C'
+      ctx.fillRect(player.x + player.width / 2, mastY - 5, 8, 12)
+      */
+    }
+      
+    ctx.restore()
+  }
+
+  const drawProjectiles = (ctx, projectiles) => {
+    projectiles.forEach(proj => {
+      ctx.save()
+      ctx.fillStyle = '#FFD700'
+      ctx.beginPath()
+      ctx.arc(proj.x + proj.width/2, proj.y + proj.height/2, proj.width/2, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.restore()
+    })
+  }
+
+  const drawObstacles = (ctx, obstacles, waterY) => {
+    const sprites = spritesRef.current || {}
+    const waveSprite = sprites.wave
+    const mineSprite = sprites.mine
+    const sharkSprite = sprites.shark
+
+    obstacles.forEach(obstacle => {
+      ctx.save()
+
+      switch (obstacle.type) {
+        case 'wave':
+          if (waveSprite) {
+            ctx.drawImage(waveSprite, obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+          } else {
+            // Fallback: draw vector wave
+            ctx.fillStyle = '#4169E1'
+            ctx.beginPath()
+            ctx.moveTo(obstacle.x, waterY)
+            ctx.quadraticCurveTo(obstacle.x + obstacle.width/2, obstacle.y, obstacle.x + obstacle.width, waterY)
+            ctx.lineTo(obstacle.x + obstacle.width, waterY + 20)
+            ctx.lineTo(obstacle.x, waterY + 20)
+            ctx.closePath()
+            ctx.fill()
+            ctx.strokeStyle = '#1E90FF'
+            ctx.stroke()
+          }
+          break
+        case 'boat':
+          // Draw enemy boat
+          ctx.fillStyle = '#654321'
+          ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+          // Boat mast
+          ctx.fillStyle = '#8B4513'
+          ctx.fillRect(obstacle.x + obstacle.width/2 - 2, obstacle.y - 20, 4, 20)
+          // Boat flag
+          ctx.fillStyle = '#000000'
+          ctx.fillRect(obstacle.x + obstacle.width/2, obstacle.y - 25, 6, 10)
+          // Cannon on boat
+          ctx.fillStyle = '#333'
+          ctx.fillRect(obstacle.x + 10, obstacle.y + 10, 15, 8)
+          break
+        case 'storm':
+          // Draw storm cloud
+          ctx.fillStyle = '#2F2F2F'
+          ctx.beginPath()
+          ctx.arc(obstacle.x + 30, obstacle.y + 30, 25, 0, Math.PI * 2)
+          ctx.arc(obstacle.x + 60, obstacle.y + 30, 30, 0, Math.PI * 2)
+          ctx.arc(obstacle.x + 90, obstacle.y + 30, 25, 0, Math.PI * 2)
+          ctx.fill()
+          // Lightning
+          ctx.strokeStyle = '#FFD700'
+          ctx.lineWidth = 3
+          ctx.beginPath()
+          ctx.moveTo(obstacle.x + 50, obstacle.y + 20)
+          ctx.lineTo(obstacle.x + 60, obstacle.y + 60)
+          ctx.lineTo(obstacle.x + 70, obstacle.y + 40)
+          ctx.stroke()
+          break
+        case 'birdFlock':
+          // Draw bird flock
+          ctx.fillStyle = '#000000'
+          for (let i = 0; i < 5; i++) {
+            const birdX = obstacle.x + (i * 15)
+            const birdY = obstacle.y + 10 + Math.sin(i) * 5
+            ctx.beginPath()
+            ctx.arc(birdX, birdY, 5, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          break
+        case 'mines':
+          if (mineSprite) {
+            // Center the mine sprite around the obstacle position
+            ctx.drawImage(
+              mineSprite,
+              obstacle.x,
+              waterY + obstacle.height/2 - obstacle.height,
+              obstacle.width,
+              obstacle.height
+            )
+          } else {
+            // Fallback: draw vector mine
+            ctx.fillStyle = '#FFD700'
+            ctx.beginPath()
+            ctx.arc(obstacle.x + obstacle.width/2, waterY + obstacle.height/2, obstacle.width/2, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = '#FFA500'
+            ctx.lineWidth = 2
+            ctx.stroke()
+            // Spikes
+            for (let i = 0; i < 8; i++) {
+              const angle = (i / 8) * Math.PI * 2
+              const spikeX = obstacle.x + obstacle.width/2 + Math.cos(angle) * (obstacle.width/2 + 3)
+              const spikeY = waterY + obstacle.height/2 + Math.sin(angle) * (obstacle.width/2 + 3)
+              ctx.beginPath()
+              ctx.moveTo(obstacle.x + obstacle.width/2, waterY + obstacle.height/2)
+              ctx.lineTo(spikeX, spikeY)
+              ctx.stroke()
+            }
+          }
+          break
+        case 'shark':
+          if (sharkSprite) {
+            ctx.drawImage(sharkSprite, obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+          } else {
+            // Fallback: draw vector shark
+            ctx.fillStyle = '#708090'
+            ctx.beginPath()
+            ctx.ellipse(obstacle.x + obstacle.width/2, obstacle.y + obstacle.height/2, obstacle.width/2, obstacle.height/2, 0, 0, Math.PI * 2)
+            ctx.fill()
+            // Shark fin
+            ctx.fillStyle = '#556B2F'
+            ctx.beginPath()
+            ctx.moveTo(obstacle.x + obstacle.width/2, obstacle.y)
+            ctx.lineTo(obstacle.x + obstacle.width/2 - 10, obstacle.y - 10)
+            ctx.lineTo(obstacle.x + obstacle.width/2 + 10, obstacle.y - 10)
+            ctx.closePath()
+            ctx.fill()
+            // Eye
+            ctx.fillStyle = '#FFFFFF'
+            ctx.beginPath()
+            ctx.arc(obstacle.x + obstacle.width/2 + 10, obstacle.y + obstacle.height/2 - 5, 3, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          break
+        default:
+          break
+      }
+
+      ctx.restore()
+    })
+  }
+
+  const updateGameStateVariables = (state, canvasWidth) => {
+    // Ensure gameState object always exists (defensive against hot-reload / stale state)
+    if (!state.gameState) {
+      state.gameState = {
+        distanceToObstacle: Infinity,
+        obstacleType: null,
+        obstacleHeight: 0,
+      }
+    }
+
+    const player = state.player
+    const obstacles = state.obstacles
+    
+    // Find the closest obstacle ahead of the player
+    let closestObstacle = null
+    let minDistance = Infinity
+    
+    for (const obstacle of obstacles) {
+      if (obstacle.x > player.x) {
+        const distance = obstacle.x - (player.x + player.width)
+        if (distance < minDistance) {
+          minDistance = distance
+          closestObstacle = obstacle
+        }
+      }
+    }
+    
+    // Update game state variables
+    state.gameState.distanceToObstacle = closestObstacle ? minDistance : Infinity
+    state.gameState.obstacleType = closestObstacle ? closestObstacle.type : null
+    state.gameState.obstacleHeight = closestObstacle ? closestObstacle.height : 0
+  }
+
+  const drawScore = (ctx, score, width) => {
+    ctx.fillStyle = '#FFD700'
+    ctx.font = 'bold 24px Arial'
+    ctx.textAlign = 'left'
+    ctx.fillText(`Score: ${score}`, 20, 40)
+  }
+
+
+  const handleForceEnd = () => {
+    if (gameStateRef.current.running) {
+      gameStateRef.current.running = false
+      onGameEnd(gameStateRef.current.score)
+    }
+  }
+
+  return (
+    <div className="game-canvas-container">
+      <canvas ref={canvasRef} className="game-canvas" />
+      {gameRunning && (
+        <div className="game-controls">
+          <div className="speed-controls">
+            <button 
+              onClick={() => setGameSpeed(prev => Math.max(prev - 0.5, 0.5))}
+              className="speed-button speed-down"
+              disabled={gameSpeed <= 0.5}
+            >
+              Slow
+            </button>
+            <span className="speed-display">Speed: {gameSpeed}x</span>
+            <button 
+              onClick={() => setGameSpeed(prev => Math.min(prev + 0.5, 5))}
+              className="speed-button speed-up"
+              disabled={gameSpeed >= 5}
+            >
+              Fast
+            </button>
+          </div>
+          <button 
+            onClick={handleForceEnd}
+            className="end-button"
+          >
+            End Game
+          </button>
+        </div>
+      )}
+      {!gameRunning && (
+        <div className="game-start-message">
+          <h2>Roscoe Raider on the High Seas</h2>
+          <p>Build your algorithm using blocks, then click "Run Algorithm" to start!</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default GameCanvas
+
