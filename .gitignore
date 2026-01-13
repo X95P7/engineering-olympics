@@ -67,3 +67,16 @@ node_modules/
 
 # dataconnect generated files
 .dataconnect
+
+# Electron build artifacts
+app/dist/
+app/release/
+*.exe
+*.exe.blockmap
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+win-unpacked/
+mac-unpacked/
+linux-unpacked/
