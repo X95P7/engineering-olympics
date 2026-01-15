@@ -73,6 +73,9 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         shark: '/sprites/shark.png',
         mine: '/sprites/mine.png',
         bird: '/sprites/bird.png',
+        bird1: '/sprites/bird1.png',
+        bird2: '/sprites/bird2.png',
+        enemyBoat: '/sprites/enemy-boat.png',
       };
 
       const images = {}
@@ -107,6 +110,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     gameStateRef.current = {
       running: true,
       score: 0,
+      scoreAccumulator: 0, // Track fractional score for incremental updates
       scoreMultiplier: 1,
       player: { x: 100, y: canvas.height - 150, width: 60, height: 60, state: 'sailing', jumpVelocity: 0, bobVelocity: 0, bobbing: false, sailLevel: 1, cannonCooldown: 0, projectiles: [] },
       obstacles: [],
@@ -122,8 +126,12 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       waitStartTick: 0,
       stormActive: false,
       stormStartTick: 0,
+      stormEndTick: 0,
       stormDuration: 1200, // Storm lasts for 1200 ticks (~5 seconds at 60 ticks/sec)
       stormGracePeriod: 240, // Grace period of 60 ticks (~1 second) before storm can cause damage
+      stormFadeOutDuration: 240, // Fade-out duration after storm ends (same as grace period for symmetry)
+      lastStormEndTick: 0, // Track when last storm ended to enforce grace period before new storms
+      stormCooldownPeriod: 600, // Cooldown period after storm ends before new storm can start
       // Game state variables for blocks
       gameState: {
         distanceToObstacle: Infinity,
@@ -193,18 +201,29 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
           // Update game state variables for blocks
           updateGameStateVariables(state, canvas.width)
 
+          // Update score incrementally based on multiplier (1 point per 6 ticks base rate)
+          // With multiplier 1.5: 1.5 points per 6 ticks, with 0.5: 0.5 points per 6 ticks
+          const scorePerTick = (1 / 6) * state.scoreMultiplier
+          state.scoreAccumulator += scorePerTick
+          if (state.scoreAccumulator >= 1) {
+            const pointsToAdd = Math.floor(state.scoreAccumulator)
+            state.score += pointsToAdd
+            state.scoreAccumulator -= pointsToAdd
+            // Only call onScoreChange when score actually changes
+            if (pointsToAdd > 0) {
+              onScoreChange(state.score)
+            }
+          }
+
           // Check collisions
           const collisionResult = checkCollisions(state)
           if (collisionResult.collided) {
             const obstacleName = collisionResult.obstacleType || 'unknown'
             console.log(`Collision detected! Player collided with: ${obstacleName}. Game ending. Score:`, state.score)
             state.running = false
-            // Update final score before calling onGameEnd
-            const baseScore = Math.floor(state.tickCount / 6)
-            const finalScore = Math.floor(baseScore * state.scoreMultiplier)
-            state.score = finalScore
-            onScoreChange(finalScore)
-            onGameEnd(finalScore)
+            // Final score is already calculated incrementally above
+            // Only call onGameEnd - it will set the score via handleGameEnd
+            onGameEnd(state.score)
             // Continue to render one more frame to clear canvas
           }
         }
@@ -221,28 +240,42 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
 
       // Only draw game elements if game is running
       if (state.running) {
-        // Draw background first
-        drawBackground(ctx, canvas.width, canvas.height, state.waterY, state.stormActive)
+        // Calculate grayscale progress during storm grace period and fade-out
+        let grayscaleProgress = 0
+        if (state.stormActive) {
+          // Storm is active - fade in during grace period, then stay at 1
+          const ticksSinceStormStart = state.tickCount - state.stormStartTick
+          const gracePeriod = state.stormGracePeriod || 240
+          grayscaleProgress = Math.min(1, ticksSinceStormStart / gracePeriod)
+        } else if (state.stormEndTick > 0) {
+          // Storm just ended - fade out gradually
+          const ticksSinceStormEnd = state.tickCount - state.stormEndTick
+          const fadeOutDuration = state.stormFadeOutDuration || 240
+          if (ticksSinceStormEnd < fadeOutDuration) {
+            // Fade out from 1 to 0
+            grayscaleProgress = 1 - (ticksSinceStormEnd / fadeOutDuration)
+          } else {
+            // Fade-out complete, reset end tick
+            state.stormEndTick = 0
+            grayscaleProgress = 0
+          }
+        }
         
-        // Draw obstacles behind the ocean (excluding sharks)
-        drawObstacles(ctx, state.obstacles.filter(o => o.type !== 'shark'), state.waterY)
+        // Draw background first
+        drawBackground(ctx, canvas.width, canvas.height, state.waterY, state.stormActive, grayscaleProgress)
+        
+        // Draw obstacles behind the ocean (excluding sharks and boats)
+        drawObstacles(ctx, state.obstacles.filter(o => o.type !== 'shark' && o.type !== 'boat'), state.waterY, state.tickCount, grayscaleProgress)
         
         // Draw water/ocean on top
-        drawWater(ctx, canvas.width, canvas.height, state.waterY, state.stormActive)
+        drawWater(ctx, canvas.width, canvas.height, state.waterY, state.stormActive, grayscaleProgress)
         
-        // Draw sharks over the ocean
-        drawSharks(ctx, state.obstacles.filter(o => o.type === 'shark'), state.waterY)
-
-        // Update score based on ticks with multiplier (sail level affects score rate)
-        const baseScore = Math.floor(state.tickCount / 6) // Score increases every 6 ticks
-        const newScore = Math.floor(baseScore * state.scoreMultiplier)
-        if (newScore !== state.score) {
-          state.score = newScore
-          onScoreChange(newScore)
-        }
+        // Draw boats and sharks over the ocean
+        drawBoats(ctx, state.obstacles.filter(o => o.type === 'boat'), state.waterY, state.tickCount)
+        drawSharks(ctx, state.obstacles.filter(o => o.type === 'shark'), state.waterY, state.tickCount, state.player)
 
         // Draw everything
-        drawPlayer(ctx, state.player, state.waterY)
+        drawPlayer(ctx, state.player, state.waterY, state.tickCount)
         drawProjectiles(ctx, state.player.projectiles)
 
         // Draw score
@@ -267,6 +300,11 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       window.removeEventListener('resize', handleResize)
     }
   }, [gameRunning, algorithm])
+
+  // Calculate bobbing offset for water motion (sine wave)
+  const getBobbingOffset = (tickCount, amplitude = 3, frequency = 0.05) => {
+    return Math.sin(tickCount * frequency) * amplitude
+  }
 
   const checkCondition = (condition, state) => {
     if (!condition || !condition.type) return false
@@ -412,6 +450,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
 
       if (player.y >= state.waterY - player.height) {
         player.y = state.waterY - player.height
+        player.baseY = player.y // Update baseY when landing
         player.jumpVelocity = 0
         player.state = 'sailing'
       }
@@ -425,6 +464,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       // Check if player has surfaced (reached water level)
       if (player.y <= state.waterY - player.height) {
         player.y = state.waterY - player.height
+        player.baseY = player.y // Update baseY when surfacing
         console.log('Bobbing stopped')
         player.bobVelocity = 0
         player.bobbing = false
@@ -469,11 +509,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     const hasBoat = state.obstacles.some(o => o.type === 'boat')
     const hasStormActive = state.stormActive
 
-    const availableTypes = obstacleTypes.filter(type => {
-      // Don't spawn boats during storms
-      if (type === 'boat' && hasStormActive) return false
-      return true
-    })
+    const availableTypes = obstacleTypes
 
     if (availableTypes.length === 0) return
 
@@ -500,19 +536,29 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     // to maintain consistent collision detection. Visual size can differ from hitbox size.
     switch (type) {
       case 'wave':
-        return { ...base, type: 'wave', y: waterY - 75, width: 120, height: 120, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
+        const waveY = waterY - 75
+        return { ...base, type: 'wave', y: waveY, baseY: waveY, width: 120, height: 120, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
       case 'boat':
-        return { ...base, type: 'boat', y: waterY, width: 105, height: 75, hitbox: { x: 0, y: 0, width: 70, height: 50 }, health: 1, requiresCannon: true }
+        // Boat hitbox dimensions (base size, like player's 60x60)
+        const boatHitboxWidth = 70
+        const boatHitboxHeight = 70
+        const boatY = waterY - boatHitboxHeight // Match player positioning: waterY - height (player is at waterY - player.height)
+        return { ...base, type: 'boat', y: boatY, baseY: boatY, width: boatHitboxWidth, height: boatHitboxHeight, hitbox: { x: 0, y: 0, width: boatHitboxWidth, height: boatHitboxHeight }, health: 1, requiresCannon: true }
       case 'storm':
-        return { ...base, type: 'storm', y: waterY - 150, width: 100, height: 150, hitbox: { x: 0, y: 0, width: 100, height: 150 }, requiresSailDown: true }
+        const stormY = waterY - 150
+        return { ...base, type: 'storm', y: stormY, baseY: stormY, width: 100, height: 150, hitbox: { x: 0, y: 0, width: 100, height: 150 }, requiresSailDown: true }
       case 'birdFlock':
-        return { ...base, type: 'birdFlock', y: waterY - 120, width: 100, height: 100, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresJumpOrBob: true }
+        const birdY = waterY - 120
+        return { ...base, type: 'birdFlock', y: birdY, baseY: birdY, width: 100, height: 100, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresJumpOrBob: true }
       case 'mines':
-        return { ...base, type: 'mines', y: waterY - 20, width: 40, height: 40, hitbox: { x: 0, y: 0, width: 20, height: 20 }, requiresJump: true, underwater: true }
+        const mineY = waterY - 20
+        return { ...base, type: 'mines', y: mineY, baseY: mineY, width: 40, height: 40, hitbox: { x: 0, y: 0, width: 20, height: 20 }, requiresJump: true, underwater: true }
       case 'shark':
-        return { ...base, type: 'shark', y: waterY + 10, width: 120, height: 120, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresNoBob: true, underwater: true }
+        const sharkY = waterY + 10
+        return { ...base, type: 'shark', y: sharkY, baseY: sharkY, width: 120, height: 120, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresNoBob: true, underwater: true, attacking: false, attackProgress: 0, originalX: base.x }
       default:
-        return { ...base, type: 'wave', y: waterY - 40, width: 60, height: 40, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
+        const defaultY = waterY - 40
+        return { ...base, type: 'wave', y: defaultY, baseY: defaultY, width: 60, height: 40, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
     }
   }
 
@@ -532,19 +578,28 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
   }
 
   const updateStorm = (state) => {
-    // Check if we should start a storm (random chance, but not too frequent)
-    if (!state.stormActive && state.tickCount > 200 && Math.random() < 0.001) {
-      // 0.1% chance per tick after 200 ticks
-      state.stormActive = true
-      state.stormStartTick = state.tickCount
-      state.stormGracePeriod = 60 // Grace period of 60 ticks (~1 second)
-      console.log('Storm started at tick', state.tickCount, '- Grace period active')
-    }
-
     // Check if storm should end
     if (state.stormActive && state.tickCount - state.stormStartTick >= state.stormDuration) {
       state.stormActive = false
-      console.log('Storm ended at tick', state.tickCount)
+      state.stormEndTick = state.tickCount
+      state.lastStormEndTick = state.tickCount
+      console.log('Storm ended at tick', state.tickCount, '- Fade-out period active')
+    }
+
+    // Check if we should start a storm (random chance, but not too frequent)
+    // Only start if no storm is active and cooldown period has passed
+    const cooldownPeriod = state.stormCooldownPeriod || 600
+    const canStartNewStorm = !state.stormActive && 
+                             state.tickCount > 200 && 
+                             (state.tickCount - state.lastStormEndTick >= cooldownPeriod)
+    
+    if (canStartNewStorm && Math.random() < 0.001) {
+      // 0.1% chance per tick after 200 ticks and cooldown period
+      state.stormActive = true
+      state.stormStartTick = state.tickCount
+      state.stormEndTick = 0 // Reset end tick
+      state.stormGracePeriod = 240 // Grace period of 240 ticks before storm can cause damage
+      console.log('Storm started at tick', state.tickCount, '- Grace period active')
     }
   }
 
@@ -568,10 +623,12 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     player.projectiles.forEach((proj, projIdx) => {
       state.obstacles.forEach((obstacle, obsIdx) => {
         if (obstacle.type === 'boat' && obstacle.health > 0) {
+          // Use baseY for collision detection (not visual Y with bobbing)
+          const obstacleY = obstacle.baseY !== undefined ? obstacle.baseY : obstacle.y
           if (proj.x < obstacle.x + obstacle.width &&
               proj.x + proj.width > obstacle.x &&
-              proj.y < obstacle.y + obstacle.height &&
-              proj.y + proj.height > obstacle.y) {
+              proj.y < obstacleY + obstacle.height &&
+              proj.y + proj.height > obstacleY) {
             obstacle.health--
             player.projectiles.splice(projIdx, 1)
             if (obstacle.health <= 0) {
@@ -596,15 +653,49 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       if (obstacle.x + obstacle.width < player.x - 50) continue // Already passed
       if (obstacle.x > player.x + player.width + 50) continue // Too far ahead
 
+      // Special check for sharks: attack if player jumps when shark is close
+      if (obstacle.type === 'shark') {
+        const distanceToShark = obstacle.x - (player.x + player.width)
+        const isClose = distanceToShark < 150 && distanceToShark > -100 // Close range for shark attack
+        
+        if (player.state === 'jumping' && isClose) {
+          // Start attack animation
+          if (!obstacle.attacking) {
+            obstacle.attacking = true
+            obstacle.attackProgress = 0
+            obstacle.originalX = obstacle.x
+          }
+          // Update attack progress
+          obstacle.attackProgress += 0.1 // Increase attack progress
+          
+          // Move shark closer to player during attack
+          const targetX = player.x + player.width - 30 // Move closer to player
+          obstacle.x = obstacle.originalX + (targetX - obstacle.originalX) * Math.min(obstacle.attackProgress, 1)
+          
+          // After animation completes, trigger collision
+          if (obstacle.attackProgress >= 1) {
+            return { collided: true, obstacleType: 'shark' }
+          }
+        } else if (obstacle.attacking) {
+          // Reset attack if player stops jumping
+          obstacle.attacking = false
+          obstacle.attackProgress = 0
+          obstacle.x = obstacle.originalX
+        }
+      }
+
       const playerLeft = player.x
       const playerRight = player.x + player.width
       const playerTop = player.y
       const playerBottom = player.y + player.height
 
+      // Use baseY for collision detection (not visual Y with bobbing)
+      const obstacleY = obstacle.baseY !== undefined ? obstacle.baseY : obstacle.y
+      
       const obstacleLeft = obstacle.x + obstacle.hitbox.x
       const obstacleRight = obstacle.x + obstacle.hitbox.x + obstacle.hitbox.width
-      const obstacleTop = obstacle.y + obstacle.hitbox.y
-      const obstacleBottom = obstacle.y + obstacle.hitbox.y + obstacle.hitbox.height
+      const obstacleTop = obstacleY + obstacle.hitbox.y
+      const obstacleBottom = obstacleY + obstacle.hitbox.y + obstacle.hitbox.height
 
       // Check if player can avoid this obstacle
       let canAvoid = false
@@ -619,8 +710,14 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         // Bird flock - can jump or bob
         canAvoid = (player.state === 'jumping' && player.y < obstacleTop - 5) || player.bobbing
       } else if (obstacle.requiresNoBob) {
-        // Shark - must NOT bob (stay on surface)
-        canAvoid = !player.bobbing && player.y >= state.waterY - player.height
+        // Shark - attacks if player jumps or bobs, safe if player does nothing (just sailing)
+        if (player.state === 'jumping' || player.bobbing) {
+          // Shark attacks if player jumps or bobs
+          canAvoid = false
+        } else {
+          // Player is sailing (doing nothing) - safe to pass
+          canAvoid = true
+        }
       }
 
       // Check collision - only if actually overlapping
@@ -636,8 +733,15 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     return { collided: false }
   }
 
-  const drawBackground = (ctx, width, height, waterY, stormActive = false) => {
+  const drawBackground = (ctx, width, height, waterY, stormActive = false, grayscaleProgress = 0) => {
     const sprites = spritesRef.current || {}
+    
+    // Apply grayscale filter based on storm progress
+    if (grayscaleProgress > 0) {
+      ctx.filter = `grayscale(${grayscaleProgress * 100}%)`
+    } else {
+      ctx.filter = 'none'
+    }
     
     // Draw background sprite (full canvas)
     const backgroundSprite = sprites.background
@@ -673,10 +777,20 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         }
       }
     }
+    
+    // Reset filter after drawing background
+    ctx.filter = 'none'
   }
 
-  const drawWater = (ctx, width, height, waterY, stormActive = false) => {
+  const drawWater = (ctx, width, height, waterY, stormActive = false, grayscaleProgress = 0) => {
     const sprites = spritesRef.current || {}
+    
+    // Apply grayscale filter based on storm progress
+    if (grayscaleProgress > 0) {
+      ctx.filter = `grayscale(${grayscaleProgress * 100}%)`
+    } else {
+      ctx.filter = 'none'
+    }
     
     // Draw ocean sprite
     const oceanSprite = sprites.ocean
@@ -705,22 +819,32 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       }
       ctx.fillRect(0, waterY, width, height - waterY)
     }
+    
+    // Reset filter after drawing water
+    ctx.filter = 'none'
   }
 
-  const drawPlayer = (ctx, player, waterY) => {
+  const drawPlayer = (ctx, player, waterY, tickCount) => {
     ctx.save()
 
     const sprites = spritesRef.current || {}
     const shipSprite = sprites.ship
 
-    // Draw ship (Roscoe Raider) - use actual player.y position for both bobbing and normal states
+    // Calculate bobbing offset for water motion (only when sailing, not jumping or bobbing)
+    let visualY = player.y
+    if (player.state === 'sailing' && player.jumpVelocity === 0 && !player.bobbing && player.baseY !== undefined) {
+      const bobbingOffset = getBobbingOffset(tickCount, 3, 0.05)
+      visualY = player.baseY + bobbingOffset
+    }
+
+    // Draw ship (Roscoe Raider) - use visual Y position with bobbing
     // Ship hull - either sprite or fallback rectangle
     // Draw sprite at 3x size (180x180) but keep hitbox at 60x60 (50% bigger than 2x)
     const spriteScale = 3
     const spriteWidth = player.width * spriteScale
     const spriteHeight = player.height * spriteScale
     const spriteX = player.x - (spriteWidth - player.width) / 2 // Center sprite on hitbox
-    const spriteY = player.y - (spriteHeight - player.height) / 2 // Center sprite on hitbox
+    const spriteY = visualY - (spriteHeight - player.height) / 2 // Center sprite on hitbox
     
     if (shipSprite) {
       ctx.imageSmoothingEnabled = false
@@ -779,35 +903,72 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     })
   }
 
-  const drawSharks = (ctx, sharks, waterY) => {
+  const drawSharks = (ctx, sharks, waterY, tickCount, player) => {
     const sprites = spritesRef.current || {}
     const sharkSprite = sprites.shark
 
     sharks.forEach(obstacle => {
       ctx.save()
 
+      // Calculate visual Y with bobbing offset for sharks
+      let visualY = obstacle.y
+      if (obstacle.baseY !== undefined) {
+        const bobbingOffset = getBobbingOffset(tickCount + obstacle.id % 100, 3, 0.05)
+        visualY = obstacle.baseY + bobbingOffset
+      }
+
+      // Attack animation: rotate and move toward player
+      let drawX = obstacle.x
+      let drawY = visualY
+      let rotation = 0
+      
+      if (obstacle.attacking && player) {
+        // Calculate angle to point at player
+        const sharkCenterX = obstacle.x + obstacle.width / 2
+        const sharkCenterY = visualY + obstacle.height / 2
+        const playerCenterX = player.x + player.width / 2
+        const playerCenterY = player.y + player.height / 2
+        
+        const dx = playerCenterX - sharkCenterX
+        const dy = playerCenterY - sharkCenterY
+        rotation = Math.atan2(dy, dx)
+        
+        // Move closer to player during attack (already done in collision check, but use for visual)
+        const attackLunge = 20 * obstacle.attackProgress // Lunge forward during attack
+        drawX = obstacle.x - Math.cos(rotation) * attackLunge
+        drawY = visualY - Math.sin(rotation) * attackLunge
+        
+        // Rotate around center
+        ctx.translate(sharkCenterX, sharkCenterY)
+        ctx.rotate(rotation)
+        ctx.translate(-sharkCenterX, -sharkCenterY)
+      }
+
       if (sharkSprite) {
         ctx.imageSmoothingEnabled = false
-        ctx.drawImage(sharkSprite, obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+        ctx.drawImage(sharkSprite, drawX, drawY, obstacle.width, obstacle.height)
         ctx.imageSmoothingEnabled = true
       } else {
         // Fallback: draw vector shark
+        const sharkCenterX = drawX + obstacle.width / 2
+        const sharkCenterY = drawY + obstacle.height / 2
+        
         ctx.fillStyle = '#708090'
         ctx.beginPath()
-        ctx.ellipse(obstacle.x + obstacle.width/2, obstacle.y + obstacle.height/2, obstacle.width/2, obstacle.height/2, 0, 0, Math.PI * 2)
+        ctx.ellipse(sharkCenterX, sharkCenterY, obstacle.width/2, obstacle.height/2, rotation, 0, Math.PI * 2)
         ctx.fill()
         // Shark fin
         ctx.fillStyle = '#556B2F'
         ctx.beginPath()
-        ctx.moveTo(obstacle.x + obstacle.width/2, obstacle.y)
-        ctx.lineTo(obstacle.x + obstacle.width/2 - 10, obstacle.y - 10)
-        ctx.lineTo(obstacle.x + obstacle.width/2 + 10, obstacle.y - 10)
+        ctx.moveTo(sharkCenterX, drawY)
+        ctx.lineTo(sharkCenterX - 10, drawY - 10)
+        ctx.lineTo(sharkCenterX + 10, drawY - 10)
         ctx.closePath()
         ctx.fill()
         // Eye
         ctx.fillStyle = '#FFFFFF'
         ctx.beginPath()
-        ctx.arc(obstacle.x + obstacle.width/2 + 10, obstacle.y + obstacle.height/2 - 5, 3, 0, Math.PI * 2)
+        ctx.arc(sharkCenterX + 10, sharkCenterY - 5, 3, 0, Math.PI * 2)
         ctx.fill()
       }
 
@@ -815,66 +976,130 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     })
   }
 
-  const drawObstacles = (ctx, obstacles, waterY) => {
+  const drawBoats = (ctx, boats, waterY, tickCount) => {
+    const sprites = spritesRef.current || {}
+    const enemyBoatSprite = sprites.enemyBoat
+
+    boats.forEach(obstacle => {
+      ctx.save()
+
+      // Calculate visual Y with bobbing offset for boats
+      let visualY = obstacle.y
+      if (obstacle.baseY !== undefined) {
+        const bobbingOffset = getBobbingOffset(tickCount + obstacle.id % 100, 3, 0.05)
+        visualY = obstacle.baseY + bobbingOffset
+      }
+
+      // Draw enemy boat using sprite at 3x size (like player)
+      if (enemyBoatSprite) {
+        const spriteScale = 3
+        const spriteWidth = obstacle.width * spriteScale
+        const spriteHeight = obstacle.height * spriteScale
+        const spriteX = obstacle.x - (spriteWidth - obstacle.width) / 2 // Center sprite on hitbox
+        const spriteY = visualY - (spriteHeight - obstacle.height) / 2 // Center sprite on hitbox
+        
+        ctx.imageSmoothingEnabled = false
+        ctx.drawImage(enemyBoatSprite, spriteX, spriteY, spriteWidth, spriteHeight)
+        ctx.imageSmoothingEnabled = true
+      } else {
+        // Fallback: draw enemy boat at 3x size (like player)
+        const spriteScale = 3
+        const spriteWidth = obstacle.width * spriteScale
+        const spriteHeight = obstacle.height * spriteScale
+        const spriteX = obstacle.x - (spriteWidth - obstacle.width) / 2 // Center sprite on hitbox
+        const spriteY = visualY - (spriteHeight - obstacle.height) / 2 // Center sprite on hitbox
+        
+        // Draw boat hull at 3x size
+        ctx.fillStyle = '#654321'
+        ctx.fillRect(spriteX, spriteY, spriteWidth, spriteHeight)
+        // Boat mast (scaled 3x)
+        ctx.fillStyle = '#8B4513'
+        const mastWidth = 4 * spriteScale
+        const mastHeight = 20 * spriteScale
+        ctx.fillRect(spriteX + spriteWidth/2 - mastWidth/2, spriteY - mastHeight, mastWidth, mastHeight)
+        // Boat flag (scaled 3x)
+        ctx.fillStyle = '#000000'
+        const flagWidth = 6 * spriteScale
+        const flagHeight = 10 * spriteScale
+        ctx.fillRect(spriteX + spriteWidth/2, spriteY - mastHeight - flagHeight, flagWidth, flagHeight)
+        // Cannon on boat (scaled 3x)
+        ctx.fillStyle = '#333'
+        const cannonWidth = 15 * spriteScale
+        const cannonHeight = 8 * spriteScale
+        ctx.fillRect(spriteX + 10 * spriteScale, spriteY + 10 * spriteScale, cannonWidth, cannonHeight)
+      }
+
+      ctx.restore()
+    })
+  }
+
+  const drawObstacles = (ctx, obstacles, waterY, tickCount, grayscaleProgress = 0) => {
     const sprites = spritesRef.current || {}
     const waveSprite = sprites.wave
     const mineSprite = sprites.mine
     const birdSprite = sprites.bird
+    const bird1Sprite = sprites.bird1
+    const bird2Sprite = sprites.bird2
 
     obstacles.forEach(obstacle => {
       ctx.save()
 
+      // Calculate visual Y with bobbing offset (except for birds)
+      let visualY = obstacle.y
+      if (obstacle.type !== 'birdFlock' && obstacle.baseY !== undefined) {
+        const bobbingOffset = getBobbingOffset(tickCount + obstacle.id % 100, 3, 0.05)
+        visualY = obstacle.baseY + bobbingOffset
+      }
+
       switch (obstacle.type) {
         case 'wave':
+          // Apply grayscale filter for waves during storms
+          if (grayscaleProgress > 0) {
+            ctx.filter = `grayscale(${grayscaleProgress * 100}%)`
+          } else {
+            ctx.filter = 'none'
+          }
+          
           if (waveSprite) {
             ctx.imageSmoothingEnabled = false
-            ctx.drawImage(waveSprite, obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+            ctx.drawImage(waveSprite, obstacle.x, visualY, obstacle.width, obstacle.height)
             ctx.imageSmoothingEnabled = true
           }
-          break
-        case 'boat':
-          // Draw enemy boat (scaled proportionally)
-          const boatScale = obstacle.width / 70 // Scale factor based on original width of 70
-          ctx.fillStyle = '#654321'
-          ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
-          // Boat mast (scaled)
-          ctx.fillStyle = '#8B4513'
-          const mastWidth = 4 * boatScale
-          const mastHeight = 20 * boatScale
-          ctx.fillRect(obstacle.x + obstacle.width/2 - mastWidth/2, obstacle.y - mastHeight, mastWidth, mastHeight)
-          // Boat flag (scaled)
-          ctx.fillStyle = '#000000'
-          const flagWidth = 6 * boatScale
-          const flagHeight = 10 * boatScale
-          ctx.fillRect(obstacle.x + obstacle.width/2, obstacle.y - mastHeight - flagHeight, flagWidth, flagHeight)
-          // Cannon on boat (scaled)
-          ctx.fillStyle = '#333'
-          const cannonWidth = 15 * boatScale
-          const cannonHeight = 8 * boatScale
-          ctx.fillRect(obstacle.x + 10 * boatScale, obstacle.y + 10 * boatScale, cannonWidth, cannonHeight)
+          
+          // Reset filter after drawing wave
+          ctx.filter = 'none'
           break
         case 'storm':
           // Draw storm cloud
           ctx.fillStyle = '#2F2F2F'
           ctx.beginPath()
-          ctx.arc(obstacle.x + 30, obstacle.y + 30, 25, 0, Math.PI * 2)
-          ctx.arc(obstacle.x + 60, obstacle.y + 30, 30, 0, Math.PI * 2)
-          ctx.arc(obstacle.x + 90, obstacle.y + 30, 25, 0, Math.PI * 2)
+          ctx.arc(obstacle.x + 30, visualY + 30, 25, 0, Math.PI * 2)
+          ctx.arc(obstacle.x + 60, visualY + 30, 30, 0, Math.PI * 2)
+          ctx.arc(obstacle.x + 90, visualY + 30, 25, 0, Math.PI * 2)
           ctx.fill()
           // Lightning
           ctx.strokeStyle = '#FFD700'
           ctx.lineWidth = 3
           ctx.beginPath()
-          ctx.moveTo(obstacle.x + 50, obstacle.y + 20)
-          ctx.lineTo(obstacle.x + 60, obstacle.y + 60)
-          ctx.lineTo(obstacle.x + 70, obstacle.y + 40)
+          ctx.moveTo(obstacle.x + 50, visualY + 20)
+          ctx.lineTo(obstacle.x + 60, visualY + 60)
+          ctx.lineTo(obstacle.x + 70, visualY + 40)
           ctx.stroke()
           break
         case 'birdFlock':
-          // Draw bird flock using bird sprite
-          if (birdSprite) {
+          // Draw bird flock using animated bird sprites (no bobbing for birds)
+          // Cycle between bird1 and bird2 every 10 ticks for animation
+          const birdAnimationFrame = Math.floor((tickCount + obstacle.id % 20) / 60) % 2
+          const currentBirdSprite = birdAnimationFrame === 0 ? bird1Sprite : bird2Sprite
+          
+          if (currentBirdSprite) {
             ctx.imageSmoothingEnabled = false
             // Draw bird sprite using obstacle's width and height from JSON/creation
+            ctx.drawImage(currentBirdSprite, obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+            ctx.imageSmoothingEnabled = true
+          } else if (birdSprite) {
+            // Fallback to single bird sprite if bird1/bird2 not available
+            ctx.imageSmoothingEnabled = false
             ctx.drawImage(birdSprite, obstacle.x, obstacle.y, obstacle.width, obstacle.height)
             ctx.imageSmoothingEnabled = true
           } else {
@@ -896,7 +1121,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
             ctx.drawImage(
               mineSprite,
               obstacle.x,
-              obstacle.y,
+              visualY,
               obstacle.width,
               obstacle.height
             )

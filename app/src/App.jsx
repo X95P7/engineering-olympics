@@ -9,6 +9,7 @@ function App() {
   const [gameRunning, setGameRunning] = useState(false)
   const [score, setScore] = useState(0)
   const [showLeaderboard, setShowLeaderboard] = useState(false)
+  const [teamName, setTeamName] = useState('')
 
   const handleRunAlgorithm = (algo) => {
     setAlgorithm(algo)
@@ -78,13 +79,20 @@ function App() {
             <h1>MSOE Engineering Olympics</h1>
             <p>Block Coding Challenge - Roscoe Raider on the High Seas</p>
           </div>
-          <button 
-            className="leaderboard-toggle-btn"
-            onClick={() => setShowLeaderboard(!showLeaderboard)}
-            style={isElectron ? { WebkitAppRegion: 'no-drag' } : {}}
-          >
-            {showLeaderboard ? 'Close' : 'Leaderboard'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            {teamName && (
+              <span style={{ fontSize: '1rem', fontWeight: 'bold', textShadow: '1px 1px 2px rgba(0, 0, 0, 0.5)' }}>
+                Team: {teamName}
+              </span>
+            )}
+            <button 
+              className="leaderboard-toggle-btn"
+              onClick={() => setShowLeaderboard(!showLeaderboard)}
+              style={isElectron ? { WebkitAppRegion: 'no-drag' } : {}}
+            >
+              {showLeaderboard ? 'Close' : 'Leaderboard'}
+            </button>
+          </div>
         </div>
       </header>
       <div className="app-container">
@@ -108,6 +116,7 @@ function App() {
         gameRunning={gameRunning} 
         onClose={() => setShowLeaderboard(false)}
         isVisible={showLeaderboard}
+        onTeamNameChange={setTeamName}
       />
     </div>
   )

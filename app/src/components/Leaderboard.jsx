@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { initializeApp } from 'firebase/app'
-import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore'
+import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, where, getDocs, updateDoc, doc, deleteDoc } from 'firebase/firestore'
 import './Leaderboard.css'
 
 // Initialize Firebase (optional - will use local storage if not configured)
@@ -11,7 +11,7 @@ let firebaseInitialized = false
 const loadFirebase = async () => {
   try {
     const configModule = await import('../firebase/config.js')
-    const firebaseConfig = configModule.firebaseConfig
+    const firebaseConfig = configModule.default || configModule.firebaseConfig
     
     // Check if config is valid (not placeholder values)
     if (firebaseConfig && 
@@ -33,21 +33,40 @@ const loadFirebase = async () => {
   } catch (error) {
     // Config file doesn't exist or import failed - that's okay, we'll use local storage
     console.info('Firebase config not available. Leaderboard will use local storage.')
+    console.info(error)
   }
 }
 
 // Initialize Firebase asynchronously
 loadFirebase()
 
-const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false }) => {
+const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false, onTeamNameChange }) => {
   const [scores, setScores] = useState([])
-  const [playerName, setPlayerName] = useState('')
+  const [teamName, setTeamName] = useState('')
   const [showNameInput, setShowNameInput] = useState(false)
+  const [showSavePrompt, setShowSavePrompt] = useState(false)
   const [previousGameRunning, setPreviousGameRunning] = useState(false)
+  const [existingScore, setExistingScore] = useState(null)
+
+  // Load team name on mount
+  useEffect(() => {
+    const savedName = localStorage.getItem('teamName')
+    if (savedName) {
+      setTeamName(savedName)
+      if (onTeamNameChange) onTeamNameChange(savedName)
+    } else {
+      // Ask for team name on first load
+      setShowNameInput(true)
+    }
+  }, [onTeamNameChange])
 
   useEffect(() => {
+    let unsubscribe = null
+    let checkFirebase = null
+    let timeoutId = null
+
     // Check if Firebase is initialized, otherwise use local storage
-    const checkFirebase = setInterval(() => {
+    checkFirebase = setInterval(() => {
       if (firebaseInitialized && db) {
         clearInterval(checkFirebase)
         
@@ -57,7 +76,7 @@ const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false }) 
           limit(10)
         )
 
-        const unsubscribe = onSnapshot(q, (snapshot) => {
+        unsubscribe = onSnapshot(q, (snapshot) => {
           const scoreList = snapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
@@ -67,12 +86,10 @@ const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false }) 
           console.warn('Firebase error, falling back to local storage:', error)
           loadLocalScores()
         })
-
-        return () => unsubscribe()
       } else if (!firebaseInitialized) {
         // Wait a bit for async Firebase init, then fallback
-        setTimeout(() => {
-          if (!firebaseInitialized) {
+        timeoutId = setTimeout(() => {
+          if (!firebaseInitialized && checkFirebase) {
             clearInterval(checkFirebase)
             loadLocalScores()
           }
@@ -83,22 +100,55 @@ const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false }) 
     // Fallback to local storage immediately
     loadLocalScores()
 
-    return () => clearInterval(checkFirebase)
+    return () => {
+      if (checkFirebase) clearInterval(checkFirebase)
+      if (unsubscribe) unsubscribe()
+      if (timeoutId) clearTimeout(timeoutId)
+    }
   }, [])
 
-  // Show name input only when game ends (transitions from running to not running)
+  // Show save prompt when game ends (transitions from running to not running)
   useEffect(() => {
-    // Game just ended (was running, now not running) and there's a score
-    if (previousGameRunning && !gameRunning && currentScore > 0 && !showNameInput) {
-      setShowNameInput(true)
+    // Game just ended (was running, now not running) and there's a score and team name is set
+    if (previousGameRunning && !gameRunning && currentScore > 0 && teamName && !showSavePrompt && !showNameInput) {
+      checkExistingScore()
+      setShowSavePrompt(true)
     }
     // Reset when game starts
     if (!previousGameRunning && gameRunning) {
-      setShowNameInput(false)
-      setPlayerName('')
+      setShowSavePrompt(false)
     }
     setPreviousGameRunning(gameRunning)
-  }, [gameRunning, currentScore, previousGameRunning, showNameInput])
+  }, [gameRunning, currentScore, previousGameRunning, showSavePrompt, showNameInput, teamName])
+
+  const checkExistingScore = async () => {
+    if (firebaseInitialized && db) {
+      try {
+        const q = query(
+          collection(db, 'scores'),
+          where('name', '==', teamName)
+        )
+        const querySnapshot = await getDocs(q)
+        if (!querySnapshot.empty) {
+          const existing = querySnapshot.docs[0].data()
+          setExistingScore({ id: querySnapshot.docs[0].id, score: existing.score })
+        } else {
+          setExistingScore(null)
+        }
+      } catch (error) {
+        console.warn('Error checking existing score:', error)
+        // Fallback to local storage check
+        const localScores = JSON.parse(localStorage.getItem('leaderboard') || '[]')
+        const existing = localScores.find(s => s.name === teamName)
+        setExistingScore(existing ? { score: existing.score } : null)
+      }
+    } else {
+      // Check local storage
+      const localScores = JSON.parse(localStorage.getItem('leaderboard') || '[]')
+      const existing = localScores.find(s => s.name === teamName)
+      setExistingScore(existing ? { score: existing.score } : null)
+    }
+  }
 
   const loadLocalScores = () => {
     const localScores = localStorage.getItem('leaderboard')
@@ -107,67 +157,156 @@ const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false }) 
     }
   }
 
-  const saveLocalScore = (name, score) => {
+  const saveLocalScore = (name, score, shouldOverwrite = false) => {
     const localScores = JSON.parse(localStorage.getItem('leaderboard') || '[]')
-    localScores.push({ name, score, timestamp: Date.now() })
+    
+    if (shouldOverwrite) {
+      // Find and update existing score
+      const index = localScores.findIndex(s => s.name === name)
+      if (index !== -1) {
+        localScores[index] = { name, score, timestamp: Date.now() }
+      } else {
+        localScores.push({ name, score, timestamp: Date.now() })
+      }
+    } else {
+      localScores.push({ name, score, timestamp: Date.now() })
+    }
+    
     localStorage.setItem('leaderboard', JSON.stringify(localScores))
     loadLocalScores()
   }
 
-  const handleSubmitScore = async (e) => {
+  const handleSaveTeamName = (e) => {
     e.preventDefault()
-    if (!playerName.trim() || currentScore === 0) return
+    const name = teamName.trim()
+    if (!name) return
+    
+    setTeamName(name)
+    localStorage.setItem('teamName', name)
+    if (onTeamNameChange) onTeamNameChange(name)
+    setShowNameInput(false)
+  }
 
-    const name = playerName.trim()
+  const handleSaveScore = async () => {
+    if (!teamName || currentScore === 0) return
+
+    const name = teamName.trim()
     const score = currentScore
+    
+    // Only save if there's no existing score OR if the new score is better
+    if (existingScore && score <= existingScore.score) {
+      // Score is not better, don't save
+      setShowSavePrompt(false)
+      setExistingScore(null)
+      return
+    }
+
+    const shouldOverwrite = existingScore && score > existingScore.score
 
     if (firebaseInitialized && db) {
       try {
-        await addDoc(collection(db, 'scores'), {
-          name,
-          score,
-          timestamp: Date.now()
-        })
+        if (shouldOverwrite && existingScore.id) {
+          // Update existing score in Firebase
+          await updateDoc(doc(db, 'scores', existingScore.id), {
+            score,
+            timestamp: Date.now()
+          })
+        } else if (shouldOverwrite) {
+          // Need to find the document first
+          const q = query(
+            collection(db, 'scores'),
+            where('name', '==', name)
+          )
+          const querySnapshot = await getDocs(q)
+          if (!querySnapshot.empty) {
+            await updateDoc(doc(db, 'scores', querySnapshot.docs[0].id), {
+              score,
+              timestamp: Date.now()
+            })
+          }
+        } else {
+          // Add new score (no existing score)
+          await addDoc(collection(db, 'scores'), {
+            name,
+            score,
+            timestamp: Date.now()
+          })
+        }
       } catch (error) {
         console.error('Error saving score to Firebase:', error)
-        saveLocalScore(name, score)
+        saveLocalScore(name, score, shouldOverwrite)
       }
     } else {
-      saveLocalScore(name, score)
+      saveLocalScore(name, score, shouldOverwrite)
     }
 
-    setPlayerName('')
-    setShowNameInput(false)
+    setShowSavePrompt(false)
+    setExistingScore(null)
   }
 
   return (
     <>
-      {/* Score submission popup - shows even when leaderboard is closed */}
-      {showNameInput && currentScore > 0 && (
+      {/* Team name input popup - shows on first load */}
+      {showNameInput && (
         <div className="name-input-overlay">
-          <form onSubmit={handleSubmitScore} className="name-input-form">
-            <h3>Submit Your Score!</h3>
-            <p>Score: {currentScore}</p>
+          <form onSubmit={handleSaveTeamName} className="name-input-form">
+            <h3>Enter Your Team Name</h3>
+            <p>This will be used for the leaderboard</p>
             <input
               type="text"
-              value={playerName}
-              onChange={(e) => setPlayerName(e.target.value)}
-              placeholder="Enter your name"
+              value={teamName}
+              onChange={(e) => setTeamName(e.target.value)}
+              placeholder="Enter your team name"
               maxLength={20}
               autoFocus
               className="name-input"
             />
             <div className="name-input-buttons">
-              <button type="submit" className="submit-button">Submit</button>
-              <button 
-                type="button" 
-                onClick={() => setShowNameInput(false)}
-                className="cancel-button"
-              >
-                Skip
-              </button>
+              <button type="submit" className="submit-button">Continue</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Save score prompt - shows when game ends */}
+      {showSavePrompt && currentScore > 0 && teamName && (
+        <div className="name-input-overlay">
+          <div className="name-input-form">
+            <h3>Want to save score?</h3>
+            <p>Score: {currentScore.toLocaleString()}</p>
+            {existingScore && (
+              <p className="existing-score-info">
+                Your current best: {existingScore.score.toLocaleString()}
+                {currentScore > existingScore.score ? ' 🎉 New best!' : ' (Not better than your best)'}
+              </p>
+            )}
+            {!existingScore && (
+              <p className="existing-score-info" style={{ color: '#fff' }}>
+                This will be your first saved score!
+              </p>
+            )}
+            <div className="name-input-buttons">
+              <button 
+                type="button" 
+                onClick={handleSaveScore}
+                className="submit-button"
+                disabled={existingScore && currentScore <= existingScore.score}
+                style={existingScore && currentScore <= existingScore.score ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
+              >
+                {existingScore && currentScore <= existingScore.score ? 'Score Not Better' : 'Yes, Save'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  setShowSavePrompt(false)
+                  setExistingScore(null)
+                }}
+                className="cancel-button"
+              >
+                No, Skip
+              </button>
+            </div>
+          </div>
         </div>
       )}
       

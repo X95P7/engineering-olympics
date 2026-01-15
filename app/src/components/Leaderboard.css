@@ -157,6 +157,13 @@
   font-size: 1.2rem;
 }
 
+.existing-score-info {
+  color: #FFD700 !important;
+  font-size: 1rem !important;
+  margin-bottom: 0.5rem !important;
+  font-weight: bold;
+}
+
 .name-input {
   width: 100%;
   padding: 0.75rem;
