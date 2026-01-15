@@ -194,6 +194,27 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
 
           // Update obstacles
           updateObstacles(state, canvas.width)
+          
+          // Update sharks: match player Y if jumping within 150 distance
+          state.obstacles.forEach(obstacle => {
+            if (obstacle.type === 'shark') {
+              const distanceToShark = obstacle.x - (state.player.x + state.player.width)
+              const isClose = distanceToShark < 150 && distanceToShark > -100
+              
+              if (state.player.state === 'jumping' && isClose) {
+                // Shark jumps out of water to match player's Y level
+                obstacle.y = state.player.y
+                obstacle.baseY = state.player.y
+              } else {
+                // Reset shark Y to normal position when not attacking
+                const normalY = state.waterY + 10
+                if (obstacle.baseY !== normalY) {
+                  obstacle.y = normalY
+                  obstacle.baseY = normalY
+                }
+              }
+            }
+          })
 
           // Update storm duration event
           updateStorm(state)
@@ -219,11 +240,12 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
           const collisionResult = checkCollisions(state)
           if (collisionResult.collided) {
             const obstacleName = collisionResult.obstacleType || 'unknown'
-            console.log(`Collision detected! Player collided with: ${obstacleName}. Game ending. Score:`, state.score)
+            const deathMessage = collisionResult.deathMessage || `Collision detected! Player collided with: ${obstacleName}`
+            console.log(`${deathMessage}. Game ending. Score:`, state.score)
             state.running = false
             // Final score is already calculated incrementally above
             // Only call onGameEnd - it will set the score via handleGameEnd
-            onGameEnd(state.score)
+            onGameEnd(state.score, deathMessage)
             // Continue to render one more frame to clear canvas
           }
         }
@@ -272,7 +294,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         
         // Draw boats and sharks over the ocean
         drawBoats(ctx, state.obstacles.filter(o => o.type === 'boat'), state.waterY, state.tickCount)
-        drawSharks(ctx, state.obstacles.filter(o => o.type === 'shark'), state.waterY, state.tickCount, state.player)
+        drawSharks(ctx, state.obstacles.filter(o => o.type === 'shark'), state.waterY, state.tickCount)
 
         // Draw everything
         drawPlayer(ctx, state.player, state.waterY, state.tickCount)
@@ -541,7 +563,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       case 'boat':
         // Boat hitbox dimensions (base size, like player's 60x60)
         const boatHitboxWidth = 70
-        const boatHitboxHeight = 70
+        const boatHitboxHeight = 50
         const boatY = waterY - boatHitboxHeight // Match player positioning: waterY - height (player is at waterY - player.height)
         return { ...base, type: 'boat', y: boatY, baseY: boatY, width: boatHitboxWidth, height: boatHitboxHeight, hitbox: { x: 0, y: 0, width: boatHitboxWidth, height: boatHitboxHeight }, health: 1, requiresCannon: true }
       case 'storm':
@@ -555,7 +577,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         return { ...base, type: 'mines', y: mineY, baseY: mineY, width: 40, height: 40, hitbox: { x: 0, y: 0, width: 20, height: 20 }, requiresJump: true, underwater: true }
       case 'shark':
         const sharkY = waterY + 10
-        return { ...base, type: 'shark', y: sharkY, baseY: sharkY, width: 120, height: 120, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresNoBob: true, underwater: true, attacking: false, attackProgress: 0, originalX: base.x }
+        return { ...base, type: 'shark', y: sharkY, baseY: sharkY, width: 120, height: 120, hitbox: { x: 0, y: 0, width: 60, height: 30 }, requiresNoBob: true, underwater: true }
       default:
         const defaultY = waterY - 40
         return { ...base, type: 'wave', y: defaultY, baseY: defaultY, width: 60, height: 40, hitbox: { x: 0, y: 0, width: 60, height: 40 }, requiresJump: true }
@@ -615,7 +637,11 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       // Only cause damage after grace period
       if (ticksSinceStormStart > gracePeriod) {
         // Player must have lowered sails during storm
-        return { collided: true, obstacleType: 'storm' } // Game over - storm sank the ship
+        return { 
+          collided: true, 
+          obstacleType: 'storm',
+          deathMessage: 'Your ship was destroyed by the storm! Lower your sails next time!'
+        }
       }
     }
 
@@ -653,34 +679,19 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
       if (obstacle.x + obstacle.width < player.x - 50) continue // Already passed
       if (obstacle.x > player.x + player.width + 50) continue // Too far ahead
 
-      // Special check for sharks: attack if player jumps when shark is close
+      // Special check for sharks: if player is jumping within 150 distance, always kill
+      // (Shark Y matching is handled in the update loop)
       if (obstacle.type === 'shark') {
         const distanceToShark = obstacle.x - (player.x + player.width)
-        const isClose = distanceToShark < 150 && distanceToShark > -100 // Close range for shark attack
+        const isClose = distanceToShark < 150 && distanceToShark > -100
         
         if (player.state === 'jumping' && isClose) {
-          // Start attack animation
-          if (!obstacle.attacking) {
-            obstacle.attacking = true
-            obstacle.attackProgress = 0
-            obstacle.originalX = obstacle.x
+          // Always kill when player jumps near shark
+          return { 
+            collided: true, 
+            obstacleType: 'shark',
+            deathMessage: 'A shark jumped out of the water and ate you!'
           }
-          // Update attack progress
-          obstacle.attackProgress += 0.1 // Increase attack progress
-          
-          // Move shark closer to player during attack
-          const targetX = player.x + player.width - 30 // Move closer to player
-          obstacle.x = obstacle.originalX + (targetX - obstacle.originalX) * Math.min(obstacle.attackProgress, 1)
-          
-          // After animation completes, trigger collision
-          if (obstacle.attackProgress >= 1) {
-            return { collided: true, obstacleType: 'shark' }
-          }
-        } else if (obstacle.attacking) {
-          // Reset attack if player stops jumping
-          obstacle.attacking = false
-          obstacle.attackProgress = 0
-          obstacle.x = obstacle.originalX
         }
       }
 
@@ -710,13 +721,22 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         // Bird flock - can jump or bob
         canAvoid = (player.state === 'jumping' && player.y < obstacleTop - 5) || player.bobbing
       } else if (obstacle.requiresNoBob) {
-        // Shark - attacks if player jumps or bobs, safe if player does nothing (just sailing)
-        if (player.state === 'jumping' || player.bobbing) {
-          // Shark attacks if player jumps or bobs
-          canAvoid = false
-        } else {
-          // Player is sailing (doing nothing) - safe to pass
-          canAvoid = true
+        // Shark - must NOT bob (stay on surface)
+        canAvoid = !player.bobbing && player.y >= state.waterY - player.height
+        
+        // If collision with shark, provide specific death message
+        if (!canAvoid && playerRight > obstacleLeft && 
+            playerLeft < obstacleRight && 
+            playerBottom > obstacleTop && 
+            playerTop < obstacleBottom) {
+          // Determine death message based on player state
+          let deathMessage = 'A shark got you!'
+          if (player.bobbing) {
+            deathMessage = 'A shark got you underwater!'
+          } else if (player.state === 'jumping') {
+            deathMessage = 'A shark jumped out of the water and ate you!'
+          }
+          return { collided: true, obstacleType: obstacle.type, deathMessage: deathMessage }
         }
       }
 
@@ -726,7 +746,29 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
           playerBottom > obstacleTop && 
           playerTop < obstacleBottom && 
           !canAvoid) {
-        return { collided: true, obstacleType: obstacle.type }
+        // Provide death message based on obstacle type
+        let deathMessage = ''
+        switch (obstacle.type) {
+          case 'wave':
+            deathMessage = 'You crashed into a wave!'
+            break
+          case 'boat':
+            deathMessage = 'An enemy boat rammed into you!'
+            break
+          case 'birdFlock':
+            deathMessage = 'You were hit by a flock of birds!'
+            break
+          case 'mines':
+            deathMessage = 'You hit a mine!'
+            break
+          case 'shark':
+            // Shark messages are handled above
+            deathMessage = 'A shark got you!'
+            break
+          default:
+            deathMessage = `You collided with a ${obstacle.type}!`
+        }
+        return { collided: true, obstacleType: obstacle.type, deathMessage: deathMessage }
       }
     }
 
@@ -903,7 +945,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
     })
   }
 
-  const drawSharks = (ctx, sharks, waterY, tickCount, player) => {
+  const drawSharks = (ctx, sharks, waterY, tickCount) => {
     const sprites = spritesRef.current || {}
     const sharkSprite = sprites.shark
 
@@ -917,58 +959,28 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         visualY = obstacle.baseY + bobbingOffset
       }
 
-      // Attack animation: rotate and move toward player
-      let drawX = obstacle.x
-      let drawY = visualY
-      let rotation = 0
-      
-      if (obstacle.attacking && player) {
-        // Calculate angle to point at player
-        const sharkCenterX = obstacle.x + obstacle.width / 2
-        const sharkCenterY = visualY + obstacle.height / 2
-        const playerCenterX = player.x + player.width / 2
-        const playerCenterY = player.y + player.height / 2
-        
-        const dx = playerCenterX - sharkCenterX
-        const dy = playerCenterY - sharkCenterY
-        rotation = Math.atan2(dy, dx)
-        
-        // Move closer to player during attack (already done in collision check, but use for visual)
-        const attackLunge = 20 * obstacle.attackProgress // Lunge forward during attack
-        drawX = obstacle.x - Math.cos(rotation) * attackLunge
-        drawY = visualY - Math.sin(rotation) * attackLunge
-        
-        // Rotate around center
-        ctx.translate(sharkCenterX, sharkCenterY)
-        ctx.rotate(rotation)
-        ctx.translate(-sharkCenterX, -sharkCenterY)
-      }
-
       if (sharkSprite) {
         ctx.imageSmoothingEnabled = false
-        ctx.drawImage(sharkSprite, drawX, drawY, obstacle.width, obstacle.height)
+        ctx.drawImage(sharkSprite, obstacle.x, visualY, obstacle.width, obstacle.height)
         ctx.imageSmoothingEnabled = true
       } else {
         // Fallback: draw vector shark
-        const sharkCenterX = drawX + obstacle.width / 2
-        const sharkCenterY = drawY + obstacle.height / 2
-        
         ctx.fillStyle = '#708090'
         ctx.beginPath()
-        ctx.ellipse(sharkCenterX, sharkCenterY, obstacle.width/2, obstacle.height/2, rotation, 0, Math.PI * 2)
+        ctx.ellipse(obstacle.x + obstacle.width/2, visualY + obstacle.height/2, obstacle.width/2, obstacle.height/2, 0, 0, Math.PI * 2)
         ctx.fill()
         // Shark fin
         ctx.fillStyle = '#556B2F'
         ctx.beginPath()
-        ctx.moveTo(sharkCenterX, drawY)
-        ctx.lineTo(sharkCenterX - 10, drawY - 10)
-        ctx.lineTo(sharkCenterX + 10, drawY - 10)
+        ctx.moveTo(obstacle.x + obstacle.width/2, visualY)
+        ctx.lineTo(obstacle.x + obstacle.width/2 - 10, visualY - 10)
+        ctx.lineTo(obstacle.x + obstacle.width/2 + 10, visualY - 10)
         ctx.closePath()
         ctx.fill()
         // Eye
         ctx.fillStyle = '#FFFFFF'
         ctx.beginPath()
-        ctx.arc(sharkCenterX + 10, sharkCenterY - 5, 3, 0, Math.PI * 2)
+        ctx.arc(obstacle.x + obstacle.width/2 + 10, visualY + obstacle.height/2 - 5, 3, 0, Math.PI * 2)
         ctx.fill()
       }
 
@@ -1199,7 +1211,7 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
   const handleForceEnd = () => {
     if (gameStateRef.current.running) {
       gameStateRef.current.running = false
-      onGameEnd(gameStateRef.current.score)
+      onGameEnd(gameStateRef.current.score, 'Game ended manually')
     }
   }
 

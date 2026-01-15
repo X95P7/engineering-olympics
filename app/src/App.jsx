@@ -10,16 +10,19 @@ function App() {
   const [score, setScore] = useState(0)
   const [showLeaderboard, setShowLeaderboard] = useState(false)
   const [teamName, setTeamName] = useState('')
+  const [deathMessage, setDeathMessage] = useState('')
 
   const handleRunAlgorithm = (algo) => {
     setAlgorithm(algo)
     setGameRunning(true)
     setScore(0)
+    setDeathMessage('')
   }
 
-  const handleGameEnd = (finalScore) => {
+  const handleGameEnd = (finalScore, message = '') => {
     setGameRunning(false)
     setScore(finalScore)
+    setDeathMessage(message)
   }
 
   // Window controls (only in Electron)
@@ -117,6 +120,7 @@ function App() {
         onClose={() => setShowLeaderboard(false)}
         isVisible={showLeaderboard}
         onTeamNameChange={setTeamName}
+        deathMessage={deathMessage}
       />
     </div>
   )

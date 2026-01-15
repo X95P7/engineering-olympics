@@ -40,7 +40,7 @@ const loadFirebase = async () => {
 // Initialize Firebase asynchronously
 loadFirebase()
 
-const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false, onTeamNameChange }) => {
+const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false, onTeamNameChange, deathMessage = '' }) => {
   const [scores, setScores] = useState([])
   const [teamName, setTeamName] = useState('')
   const [showNameInput, setShowNameInput] = useState(false)
@@ -273,11 +273,16 @@ const Leaderboard = ({ currentScore, gameRunning, onClose, isVisible = false, on
         <div className="name-input-overlay">
           <div className="name-input-form">
             <h3>Want to save score?</h3>
+            {deathMessage && (
+              <p style={{ color: '#ff6b6b', fontWeight: 'bold', marginBottom: '0.5rem', fontSize: '1.1rem' }}>
+                {deathMessage}
+              </p>
+            )}
             <p>Score: {currentScore.toLocaleString()}</p>
             {existingScore && (
               <p className="existing-score-info">
-                Your current best: {existingScore.score.toLocaleString()}
-                {currentScore > existingScore.score ? ' 🎉 New best!' : ' (Not better than your best)'}
+                Your current best: {existingScore.score.toLocaleString()}<br />
+                {currentScore > existingScore.score ?  'New best!' : '(Not better than your best)'}
               </p>
             )}
             {!existingScore && (
