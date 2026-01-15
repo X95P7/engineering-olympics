@@ -65,17 +65,19 @@ const GameCanvas = ({ algorithm, gameRunning, onGameEnd, onScoreChange }) => {
         return Promise.resolve()
       }
 
+      // Use BASE_URL to ensure paths work in both dev and production Electron builds
+      const baseUrl = import.meta.env.BASE_URL || './'
       const sources = {
-        background: '/sprites/background.png',
-        ocean: '/sprites/ocean.png',
-        ship: '/sprites/ship.png',
-        wave: '/sprites/wave.png',
-        shark: '/sprites/shark.png',
-        mine: '/sprites/mine.png',
-        bird: '/sprites/bird.png',
-        bird1: '/sprites/bird1.png',
-        bird2: '/sprites/bird2.png',
-        enemyBoat: '/sprites/enemy-boat.png',
+        background: `${baseUrl}sprites/background.png`,
+        ocean: `${baseUrl}sprites/ocean.png`,
+        ship: `${baseUrl}sprites/ship.png`,
+        wave: `${baseUrl}sprites/wave.png`,
+        shark: `${baseUrl}sprites/shark.png`,
+        mine: `${baseUrl}sprites/mine.png`,
+        bird: `${baseUrl}sprites/bird.png`,
+        bird1: `${baseUrl}sprites/bird1.png`,
+        bird2: `${baseUrl}sprites/bird2.png`,
+        enemyBoat: `${baseUrl}sprites/enemy-boat.png`,
       };
 
       const images = {}
